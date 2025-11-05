@@ -1,0 +1,18 @@
+# Node
+node_modules/
+pnpm-lock.yaml
+.env
+.DS_Store
+
+# Python
+**/.venv/
+*.pyc
+__pycache__/
+
+# Editor
+.vscode/
+.idea/
+
+# Docker
+docker-compose.override.yml
+.env.local
