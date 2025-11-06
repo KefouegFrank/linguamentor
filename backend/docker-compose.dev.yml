@@ -1,13 +1,17 @@
+# Docker Compose for Development
+# Usage: docker compose -f docker-compose.dev.yml up
+
 services:
   db:
     image: postgres:16-alpine
+    container_name: linguamentor_db_dev
     restart: unless-stopped
     environment:
       POSTGRES_USER: linguamentor_user
       POSTGRES_PASSWORD: securepass
       POSTGRES_DB: linguamentor_db
     volumes:
-      - db_data:/var/lib/postgresql/data
+      - db_data_dev:/var/lib/postgresql/data
     ports:
       - "5432:5432"
     healthcheck:
@@ -15,15 +19,18 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - linguamentor_dev
 
   backend:
     build:
       context: .
-      target: development  # Use development stage
+      target: development
+    container_name: linguamentor_backend_dev
     volumes:
       - .:/app
-      - /app/node_modules  # Prevent overwriting node_modules
-      - /app/dist  # Prevent overwriting dist folder
+      - /app/node_modules
+      - /app/dist
     ports:
       - "4000:4000"
     env_file: .env
@@ -34,6 +41,14 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    networks:
+      - linguamentor_dev
+    command: pnpm dev
 
 volumes:
-  db_data:
+  db_data_dev:
+
+networks:
+  linguamentor_dev:
+    driver: bridge
+

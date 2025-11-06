@@ -1,5 +1,6 @@
 # Build stage (also used for development)
-FROM node:20-alpine AS builder
+# Using Debian-based image for better Prisma/OpenSSL compatibility
+FROM node:20-slim AS builder
 
 # Install the exact pnpm version specified in package.json
 RUN corepack enable && corepack prepare pnpm@10.20.0 --activate
@@ -20,11 +21,16 @@ RUN pnpm build
 
 # Development stage (stops here for dev)
 FROM builder AS development
+
+# OpenSSL is already installed in builder stage, but ensure it's available
+# (inherited from builder, no need to reinstall)
+
 EXPOSE 4000
 CMD ["pnpm", "dev"]
 
 # Production stage
-FROM node:20-alpine AS production
+# Using Debian-based image for better Prisma/OpenSSL compatibility
+FROM node:20-slim AS production
 
 # Install the exact pnpm version
 RUN corepack enable && corepack prepare pnpm@10.20.0 --activate
@@ -41,7 +47,7 @@ RUN pnpm install --frozen-lockfile --prod
 COPY --from=builder /app/dist ./dist
 
 # Create non-root user and set ownership
-RUN addgroup -S app && adduser -S app -G app && \
+RUN groupadd -r app && useradd -r -g app app && \
     chown -R app:app /app
 
 # Switch to non-root user

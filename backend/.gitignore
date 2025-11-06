@@ -3,37 +3,35 @@ node_modules/
 .pnpm-store/
 
 # Build output
-dist/
-build/
+/dist
+
+# Environment files (keep examples)
+.env
+.env.local
+.env.production
+.env.*.local
+# But allow .env.example files
+!.env.example
+!.env.local.example
 
 # Logs
-logs/
-*.log
 npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
 pnpm-debug.log*
+*.log
 
-# Environment
-.env
-.env.*
-!.env.example
+# Misc
+.DS_Store
+Thumbs.db
 
 # IDE
 .vscode/
 .idea/
 *.swp
 *.swo
+*~
 
-# OS
-.DS_Store
-Thumbs.db
-
-# Test coverage
+# Testing
 coverage/
-
-# TypeScript
-*.tsbuildinfo
-
-# Temporary files
-*.tmp
-*.temp
-.cache/
+.nyc_output/
