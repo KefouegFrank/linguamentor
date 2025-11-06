@@ -21,10 +21,12 @@ import {
     hashRefreshToken,
     getRefreshTokenExpiry,
     sanitizeUser,
+    generateSecureToken,
 } from '../utils/auth.utils';
 import { securityConfig } from '../config/auth.config';
 import { prisma } from '../prisma/client';
 import crypto from 'node:crypto';
+import { emailService } from './email.service';
 
 
 /**
@@ -56,6 +58,10 @@ export class AuthService {
         // Hash password
         const passwordHash = await hashPassword(data.password);
 
+        // Generate email verification token
+        const verificationToken = crypto.randomUUID();
+        const verificationTokenExpiry = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
+
         // Create user
         const user = await prisma.user.create({
             data: {
@@ -68,11 +74,25 @@ export class AuthService {
                 targetExam: data.targetExam,
                 currentLevel: 'A1', // Default starting level
                 lastActiveAt: new Date(),
+                emailVerificationToken: verificationToken,
+                emailVerificationExpiry: verificationTokenExpiry,
             },
         });
 
         // Generate tokens
         const { accessToken, refreshToken } = await this.generateTokenPair(user.id, user.email, user.role);
+
+        // Send verification email (async - don't wait)
+        try {
+            await emailService.sendVerificationEmail(
+                user.email,
+                verificationToken,
+                user.firstName || user.email
+            );
+        } catch (emailError) {
+            console.error('Failed to send verification email:', emailError);
+            // Continue even if email fails
+        }
 
         return {
             accessToken,
@@ -215,6 +235,271 @@ export class AuthService {
     }
 
     /**
+     * Request password reset
+     */
+    async requestPasswordReset(email: string): Promise<{ resetToken: string }> {
+        try {
+            // Find user by email
+            const user = await prisma.user.findUnique({
+                where: { email: email.toLowerCase() },
+            });
+
+            if (!user) {
+                // Don't reveal if user exists for security
+                return { resetToken: '' };
+            }
+
+            // Generate secure reset token
+      const resetToken = generateSecureToken();
+      const resetTokenExpiry = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
+
+            // Update user with reset token
+            await prisma.user.update({
+                where: { id: user.id },
+                data: {
+                    resetPasswordToken: resetToken,
+                    resetPasswordExpiry: resetTokenExpiry,
+                },
+            });
+
+            return { resetToken };
+        } catch (error) {
+            console.error('Password reset request error:', error);
+            throw new Error('Failed to process password reset request');
+        }
+    }
+
+    /**
+     * Reset password with token
+     */
+    async resetPassword(token: string, newPassword: string): Promise<void> {
+        try {
+            // Find user with valid reset token
+            const user = await prisma.user.findFirst({
+                where: {
+                    resetPasswordToken: token,
+                    resetPasswordExpiry: {
+                        gt: new Date(),
+                    },
+                },
+            });
+
+            if (!user) {
+                throw new Error('Invalid or expired reset token');
+            }
+
+            // Hash new password
+            const hashedPassword = await hashPassword(newPassword);
+
+            // Update user password and clear reset token
+            await prisma.user.update({
+                where: { id: user.id },
+                data: {
+                    passwordHash: hashedPassword,
+                    resetPasswordToken: null,
+                    resetPasswordExpiry: null,
+                    passwordChangedAt: new Date(),
+                },
+            });
+
+            // Invalidate all existing refresh tokens for security
+            await prisma.refreshToken.updateMany({
+                where: { userId: user.id },
+                data: { revoked: true },
+            });
+        } catch (error) {
+            console.error('Password reset error:', error);
+            throw error; // Re-throw to preserve specific error messages
+        }
+    }
+
+    /**
+     * Verify email with token
+     */
+    async verifyEmail(token: string): Promise<void> {
+        try {
+            // Find user with valid verification token
+            const user = await prisma.user.findFirst({
+                where: {
+                    emailVerificationToken: token,
+                    emailVerificationExpiry: {
+                        gt: new Date(),
+                    },
+                },
+            });
+
+            if (!user) {
+                throw new Error('Invalid or expired verification token');
+            }
+
+            // Update user as verified
+            await prisma.user.update({
+                where: { id: user.id },
+                data: {
+                    emailVerified: true,
+                    emailVerificationToken: null,
+                    emailVerificationExpiry: null,
+                    verifiedAt: new Date(),
+                },
+            });
+        } catch (error) {
+            console.error('Email verification error:', error);
+            throw error; // Re-throw to preserve specific error messages
+        }
+    }
+
+    /**
+     * Resend email verification
+     */
+    async resendVerificationEmail(userId: string): Promise<{ verificationToken: string }> {
+        try {
+            const user = await prisma.user.findUnique({
+                where: { id: userId },
+            });
+
+            if (!user) {
+                throw new Error('User not found');
+            }
+
+            if (user.emailVerified) {
+                throw new Error('Email already verified');
+            }
+
+            // Generate new verification token
+            const verificationToken = crypto.randomUUID();
+            const verificationTokenExpiry = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
+
+            // Update user with new verification token
+            await prisma.user.update({
+                where: { id: user.id },
+                data: {
+                    emailVerificationToken: verificationToken,
+                    emailVerificationExpiry: verificationTokenExpiry,
+                },
+            });
+
+            return { verificationToken };
+        } catch (error) {
+            console.error('Resend verification email error:', error);
+            throw error; // Re-throw to preserve specific error messages
+        }
+    }
+
+    /**
+     * Change password for authenticated user
+     */
+    async changePassword(
+        userId: string,
+        currentPassword: string,
+        newPassword: string
+    ): Promise<void> {
+        try {
+            // Get user with password
+            const user = await prisma.user.findUnique({
+                where: { id: userId },
+            });
+
+            if (!user) {
+                throw new Error('User not found');
+            }
+
+            // Verify current password
+            const isCurrentPasswordValid = await comparePassword(currentPassword, user.passwordHash);
+            if (!isCurrentPasswordValid) {
+                throw new Error('Current password is incorrect');
+            }
+
+            // Check if new password is different from current
+            const isSamePassword = await comparePassword(newPassword, user.passwordHash);
+            if (isSamePassword) {
+                throw new Error('New password must be different from current password');
+            }
+
+            // Hash new password
+            const hashedPassword = await hashPassword(newPassword);
+
+            // Update user password
+            await prisma.user.update({
+                where: { id: userId },
+                data: {
+                    passwordHash: hashedPassword,
+                    passwordChangedAt: new Date(),
+                },
+            });
+
+            // Invalidate all existing refresh tokens for security
+            await prisma.refreshToken.updateMany({
+                where: { userId },
+                data: { revoked: true },
+            });
+        } catch (error) {
+            console.error('Change password error:', error);
+            throw error; // Re-throw to preserve specific error messages
+        }
+    }
+
+    /**
+     * Update user profile
+     */
+    async updateProfile(
+        userId: string,
+        profileData: {
+            firstName?: string;
+            lastName?: string;
+            targetLanguage?: string;
+            nativeLanguage?: string;
+            targetExam?: string;
+            currentLevel?: string;
+        }
+    ): Promise<UserResponse> {
+        try {
+            // Update user profile
+            const updatedUser = await prisma.user.update({
+                where: { id: userId },
+                data: {
+                    ...profileData,
+                    updatedAt: new Date(),
+                },
+            });
+
+            return sanitizeUser(updatedUser) as UserResponse;
+        } catch (error) {
+            console.error('Update profile error:', error);
+            throw error; // Re-throw to preserve specific error messages
+        }
+    }
+
+    /**
+     * Delete user account
+     */
+    async deleteAccount(userId: string, password: string): Promise<void> {
+        try {
+            // Get user with password
+            const user = await prisma.user.findUnique({
+                where: { id: userId },
+            });
+
+            if (!user) {
+                throw new Error('User not found');
+            }
+
+            // Verify password before deletion
+            const isPasswordValid = await comparePassword(password, user.passwordHash);
+            if (!isPasswordValid) {
+                throw new Error('Invalid password');
+            }
+
+            // Delete user (cascade will handle related data)
+            await prisma.user.delete({
+                where: { id: userId },
+            });
+        } catch (error) {
+            console.error('Delete account error:', error);
+            throw error; // Re-throw to preserve specific error messages
+        }
+    }
+
+    /**
      * Logout user from all devices by revoking all refresh tokens
      * @param userId - User ID
      */
@@ -245,6 +530,105 @@ export class AuthService {
         }
 
         return sanitizeUser(user) as UserResponse;
+    }
+
+    /**
+     * Get user by email (internal use)
+     */
+    async getUserByEmail(email: string): Promise<User | null> {
+        try {
+            return await prisma.user.findUnique({
+                where: { email: email.toLowerCase() },
+            });
+        } catch (error) {
+            console.error('Get user by email error:', error);
+            return null;
+        }
+    }
+
+    /**
+     * Get user by ID (internal use)
+     */
+    async getUserByIdInternal(userId: string): Promise<User | null> {
+        try {
+            return await prisma.user.findUnique({
+                where: { id: userId },
+            });
+        } catch (error) {
+            console.error('Get user by ID error:', error);
+            return null;
+        }
+    }
+
+    /**
+     * Create OAuth user
+     */
+    async createOAuthUser(userData: {
+        email: string;
+        firstName?: string;
+        lastName?: string;
+        avatar?: string;
+        provider: string;
+        providerId: string;
+    }): Promise<User> {
+        try {
+            const { email, firstName, lastName, avatar, provider, providerId } = userData;
+
+            // Generate username from email if not provided
+            const username = email.split('@')[0] + '_' + crypto.randomBytes(4).toString('hex');
+
+            // Create user with OAuth info
+            const user = await prisma.user.create({
+                data: {
+                    email: email.toLowerCase(),
+                    username,
+                    firstName,
+                    lastName,
+                    avatar,
+                    emailVerified: true, // OAuth providers verify email
+                    verifiedAt: new Date(),
+                    oauthProvider: provider,
+                    oauthId: providerId,
+                },
+            });
+
+            return sanitizeUser(user);
+        } catch (error) {
+            console.error('Create OAuth user error:', error);
+            throw error;
+        }
+    }
+
+    /**
+     * Update OAuth info for existing user
+     */
+    async updateOAuthInfo(
+        userId: string,
+        oauthData: {
+            provider: string;
+            providerId: string;
+            avatar?: string;
+        }
+    ): Promise<User> {
+        try {
+            const { provider, providerId, avatar } = oauthData;
+
+            const user = await prisma.user.update({
+                where: { id: userId },
+                data: {
+                    oauthProvider: provider,
+                    oauthId: providerId,
+                    avatar,
+                    emailVerified: true,
+                    verifiedAt: new Date(),
+                },
+            });
+
+            return sanitizeUser(user);
+        } catch (error) {
+            console.error('Update OAuth info error:', error);
+            throw error;
+        }
     }
 
     /**
