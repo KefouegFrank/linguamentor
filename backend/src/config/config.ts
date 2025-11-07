@@ -119,3 +119,19 @@ export const fileUpload = {
   ],
   presignedUrlExpiry: toNum(process.env.PRESIGNED_URL_EXPIRY, 3600), // 1 hour default
 };
+
+// Export config object
+export const config = {
+  NODE_ENV,
+  IS_PRODUCTION,
+  IS_DEVELOPMENT,
+  PORT,
+  DATABASE_URL,
+  COOKIE_DOMAIN,
+  COOKIE_SECURE,
+  LOG_LEVEL,
+  aws,
+  redis,
+  internalService,
+  fileUpload,
+};

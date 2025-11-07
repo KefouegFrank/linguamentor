@@ -1,16 +1,8 @@
 import { Queue, Worker, Job as BullJob } from 'bullmq';
 import IORedis from 'ioredis';
-import { config } from '../config/config';
-import { prisma } from '../prisma/prisma';
-import { AppError } from '../utils/errorHandler';
+import { prisma } from '@prisma/client';
+import { AppError } from '../utils/errors';
 import { JobStatus, JobType, JobPriority } from '@prisma/client';
-
-// Redis connection
-const connection = new IORedis(config.redis.url, {
-  maxRetriesPerRequest: null,
-  retryDelayOnFailure: 1000,
-  enableReadyCheck: false,
-});
 
 // Queue names
 export const QUEUE_NAMES = {
@@ -62,8 +54,14 @@ export interface EmailNotificationJobResult {
 export class QueueService {
   private queues: Map<string, Queue> = new Map();
   private workers: Map<string, Worker> = new Map();
+  private connection: IORedis;
 
-  constructor() {
+  constructor(redisUrl: string) {
+    this.connection = new IORedis(redisUrl, {
+      maxRetriesPerRequest: null,
+      retryDelayOnFailure: 1000,
+      enableReadyCheck: false,
+    });
     this.initializeQueues();
   }
 
@@ -71,7 +69,7 @@ export class QueueService {
     // Initialize all queues
     Object.values(QUEUE_NAMES).forEach(queueName => {
       const queue = new Queue(queueName, {
-        connection,
+        connection: this.connection,
         defaultJobOptions: {
           removeOnComplete: { count: 1000 },
           removeOnFail: { count: 5000 },
@@ -397,7 +395,7 @@ export class QueueService {
    */
   createWorker(queueName: string, processor: (job: BullJob) => Promise<any>) {
     const worker = new Worker(queueName, processor, {
-      connection,
+      connection: this.connection,
       concurrency: 10,
       removeOnComplete: { count: 1000 },
       removeOnFail: { count: 5000 },
@@ -445,12 +443,11 @@ export class QueueService {
     await Promise.all(Array.from(this.queues.values()).map(queue => queue.close()));
     
     // Close Redis connection
-    await connection.quit();
+    await this.connection.quit();
   }
 }
 
-// Export singleton instance
-export const queueService = new QueueService();
-
-// Export connection for use in other services
-export { connection as redisConnection };
+// Export a function to create the service with dependency injection
+export const createQueueService = (redisUrl: string) => {
+  return new QueueService(redisUrl);
+};

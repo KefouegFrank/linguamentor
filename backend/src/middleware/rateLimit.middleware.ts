@@ -1,6 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
-import { redisConnection } from '../services/queue.service';
-import { AppError } from '../utils/errorHandler';
+import IORedis from 'ioredis';
+import { AppError } from '../utils/errors';
 
 interface RateLimitOptions {
     windowMs: number; // Time window in milliseconds
@@ -20,7 +20,7 @@ interface RateLimitInfo {
 /**
  * Redis-backed rate limiting middleware
  */
-export const createRateLimiter = (options: RateLimitOptions) => {
+export const createRateLimiter = (redisConnection: IORedis, options: RateLimitOptions) => {
   const {
     windowMs,
     max,
@@ -84,112 +84,7 @@ export const createRateLimiter = (options: RateLimitOptions) => {
           handleResponse(this.statusCode);
           return originalSend.call(this, data);
         };
-};
-
-/**
- * User-specific rate limiter (by user ID)
- */
-export const userRateLimiter = createRateLimiter({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100, // 100 requests per 15 minutes
-  keyGenerator: (req: Request) => {
-    const user = (req as any).user;
-    return user ? `user:${user.id}` : `ip:${req.ip || 'unknown'}`;
-  },
-  message: 'Too many requests from this user, please try again later',
-});
-
-/**
- * API-specific rate limiter (stricter for API endpoints)
- */
-export const apiRateLimiter = createRateLimiter({
-  windowMs: 60 * 1000, // 1 minute
-  max: 60, // 60 requests per minute
-  keyGenerator: (req: Request) => {
-    const user = (req as any).user;
-    return user ? `api:${user.id}` : `api:${req.ip || 'unknown'}`;
-  },
-  message: 'Too many API requests, please try again later',
-});
-
-/**
- * File upload rate limiter (more restrictive)
- */
-export const uploadRateLimiter = createRateLimiter({
-  windowMs: 60 * 60 * 1000, // 1 hour
-  max: 10, // 10 uploads per hour
-  keyGenerator: (req: Request) => {
-    const user = (req as any).user;
-    return user ? `upload:${user.id}` : `upload:${req.ip || 'unknown'}`;
-  },
-  message: 'Too many file uploads, please try again later',
-});
-
-/**
- * Job creation rate limiter
- */
-export const jobRateLimiter = createRateLimiter({
-  windowMs: 5 * 60 * 1000, // 5 minutes
-  max: 20, // 20 jobs per 5 minutes
-  keyGenerator: (req: Request) => {
-    const user = (req as any).user;
-    return user ? `job:${user.id}` : `job:${req.ip || 'unknown'}`;
-  },
-  message: 'Too many job requests, please try again later',
-});
-
-/**
- * Authentication rate limiter (for login/register endpoints)
- */
-export const authRateLimiter = createRateLimiter({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 5, // 5 attempts per 15 minutes
-  keyGenerator: (req: Request) => `auth:${req.ip || 'unknown'}`,
-  message: 'Too many authentication attempts, please try again later',
-  skipSuccessfulRequests: true, // Don't count successful logins
-});
-
-/**
- * Webhook rate limiter (for service-to-service communication)
- */
-export const webhookRateLimiter = createRateLimiter({
-  windowMs: 60 * 1000, // 1 minute
-  max: 1000, // 1000 webhooks per minute (high limit for services)
-  keyGenerator: (req: Request) => `webhook:${req.ip || 'unknown'}`,
-  message: 'Too many webhook requests, please try again later',
-});
-
-/**
- * Custom rate limiter factory
- */
-export const createCustomRateLimiter = (options: Partial<RateLimitOptions> & { name: string }) => {
-  const { name, ...rateLimitOptions } = options;
-  
-  return createRateLimiter({
-    windowMs: 60 * 1000, // 1 minute default
-    max: 60, // 60 requests per minute default
-    keyGenerator: (req: Request) => `${name}:${req.ip || 'unknown'}`,
-    message: `Too many ${name} requests, please try again later`,
-    ...rateLimitOptions,
-  });
-};
-
-/**
- * Rate limit error handler
- */
-export const rateLimitErrorHandler = (err: any, req: Request, res: Response, next: NextFunction) => {
-  if (err.status === 429 || err.statusCode === 429) {
-    return res.status(429).json({
-      success: false,
-      error: {
-        message: err.message || 'Too many requests, please try again later',
-        code: 'RATE_LIMIT_EXCEEDED',
-        retryAfter: err.retryAfter || 60,
-      },
-    });
-  }
-  next(err);
-};    
+        
         res.json = function(data: any) {
           handleResponse(this.statusCode);
           return originalJson.call(this, data);
@@ -217,4 +112,107 @@ export const rateLimitErrorHandler = (err: any, req: Request, res: Response, nex
   };
 };
 
+/**
+ * User-specific rate limiter (by user ID)
+ */
+export const userRateLimiter = (redisConnection: IORedis) => createRateLimiter(redisConnection, {
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // 100 requests per 15 minutes
+  keyGenerator: (req: Request) => {
+    const user = (req as any).user;
+    return user ? `user:${user.id}` : `ip:${req.ip || 'unknown'}`;
+  },
+  message: 'Too many requests from this user, please try again later',
+});
 
+/**
+ * API-specific rate limiter (stricter for API endpoints)
+ */
+export const apiRateLimiter = (redisConnection: IORedis) => createRateLimiter(redisConnection, {
+  windowMs: 60 * 1000, // 1 minute
+  max: 60, // 60 requests per minute
+  keyGenerator: (req: Request) => {
+    const user = (req as any).user;
+    return user ? `api:${user.id}` : `api:${req.ip || 'unknown'}`;
+  },
+  message: 'Too many API requests, please try again later',
+});
+
+/**
+ * File upload rate limiter (more restrictive)
+ */
+export const uploadRateLimiter = (redisConnection: IORedis) => createRateLimiter(redisConnection, {
+  windowMs: 60 * 60 * 1000, // 1 hour
+  max: 10, // 10 uploads per hour
+  keyGenerator: (req: Request) => {
+    const user = (req as any).user;
+    return user ? `upload:${user.id}` : `upload:${req.ip || 'unknown'}`;
+  },
+  message: 'Too many file uploads, please try again later',
+});
+
+/**
+ * Job creation rate limiter
+ */
+export const jobRateLimiter = (redisConnection: IORedis) => createRateLimiter(redisConnection, {
+  windowMs: 5 * 60 * 1000, // 5 minutes
+  max: 20, // 20 jobs per 5 minutes
+  keyGenerator: (req: Request) => {
+    const user = (req as any).user;
+    return user ? `job:${user.id}` : `job:${req.ip || 'unknown'}`;
+  },
+  message: 'Too many job requests, please try again later',
+});
+
+/**
+ * Authentication rate limiter (for login/register endpoints)
+ */
+export const authRateLimiter = (redisConnection: IORedis) => createRateLimiter(redisConnection, {
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 5, // 5 attempts per 15 minutes
+  keyGenerator: (req: Request) => `auth:${req.ip || 'unknown'}`,
+  message: 'Too many authentication attempts, please try again later',
+  skipSuccessfulRequests: true, // Don't count successful logins
+});
+
+/**
+ * Webhook rate limiter (for service-to-service communication)
+ */
+export const webhookRateLimiter = (redisConnection: IORedis) => createRateLimiter(redisConnection, {
+  windowMs: 60 * 1000, // 1 minute
+  max: 1000, // 1000 webhooks per minute (high limit for services)
+  keyGenerator: (req: Request) => `webhook:${req.ip || 'unknown'}`,
+  message: 'Too many webhook requests, please try again later',
+});
+
+/**
+ * Custom rate limiter factory
+ */
+export const createCustomRateLimiter = (redisConnection: IORedis, options: Partial<RateLimitOptions> & { name: string }) => {
+  const { name, ...rateLimitOptions } = options;
+  
+  return createRateLimiter(redisConnection, {
+    windowMs: 60 * 1000, // 1 minute default
+    max: 60, // 60 requests per minute default
+    keyGenerator: (req: Request) => `${name}:${req.ip || 'unknown'}`,
+    message: `Too many ${name} requests, please try again later`,
+    ...rateLimitOptions,
+  });
+};
+
+/**
+ * Rate limit error handler
+ */
+export const rateLimitErrorHandler = (err: any, req: Request, res: Response, next: NextFunction) => {
+  if (err.status === 429 || err.statusCode === 429) {
+    return res.status(429).json({
+      success: false,
+      error: {
+        message: err.message || 'Too many requests, please try again later',
+        code: 'RATE_LIMIT_EXCEEDED',
+        retryAfter: err.retryAfter || 60,
+      },
+    });
+  }
+  next(err);
+};
