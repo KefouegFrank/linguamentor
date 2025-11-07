@@ -22,6 +22,22 @@ services:
     networks:
       - linguamentor_dev
 
+  redis:
+    image: redis:7-alpine
+    container_name: linguamentor_redis_dev
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data_dev:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - linguamentor_dev
+
   backend:
     build:
       context: .
@@ -41,14 +57,16 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     networks:
       - linguamentor_dev
     command: pnpm dev
 
 volumes:
   db_data_dev:
+  redis_data_dev:
 
 networks:
   linguamentor_dev:
     driver: bridge
-
