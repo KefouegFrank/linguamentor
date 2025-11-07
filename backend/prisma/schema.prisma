@@ -660,3 +660,161 @@ model AdminLog {
   @@index([createdAt])
   @@map("admin_logs")
 }
+
+// ============================================
+// FILE MANAGEMENT
+// ============================================
+
+enum FileStatus {
+  PENDING
+  UPLOADED
+  PROCESSING
+  PROCESSED
+  FAILED
+  DELETED
+}
+
+enum FileType {
+  AUDIO
+  VIDEO
+  IMAGE
+  DOCUMENT
+  OTHER
+}
+
+model File {
+  id String @id @default(uuid())
+  userId String @map("user_id")
+
+  // File metadata
+  originalName String @map("original_name")
+  fileName     String @map("file_name") // S3 key
+  mimeType     String @map("mime_type")
+  size         BigInt
+  fileType     FileType @map("file_type")
+  
+  // Status and processing
+  status        FileStatus @default(PENDING)
+  checksum      String? // SHA-256 hash
+  metadata      Json?   @db.JsonB // additional metadata like duration, resolution, etc.
+  
+  // S3 information
+  s3Bucket String @map("s3_bucket")
+  s3Key    String @map("s3_key")
+  s3Url    String? @map("s3_url") // Public URL if applicable
+  
+  // Processing results
+  processedUrl   String? @map("processed_url")
+  processedAt    DateTime? @map("processed_at")
+  errorMessage   String? @map("error_message") @db.Text
+  processingTime Int?    @map("processing_time") // in milliseconds
+  
+  // TTL for cleanup
+  expiresAt DateTime? @map("expires_at")
+  
+  // Timestamps
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  jobs Job[]
+  
+  @@index([userId])
+  @@index([status])
+  @@index([fileType])
+  @@index([createdAt])
+  @@index([expiresAt])
+  @@map("files")
+}
+
+// ============================================
+// JOB QUEUE SYSTEM
+// ============================================
+
+enum JobStatus {
+  PENDING
+  QUEUED
+  PROCESSING
+  COMPLETED
+  FAILED
+  CANCELLED
+  TIMEOUT
+}
+
+enum JobType {
+  AUDIO_TRANSCRIPTION
+  VIDEO_ANALYSIS
+  AI_PROCESSING
+  FILE_CONVERSION
+  CONTENT_GENERATION
+  ASSESSMENT_SCORING
+}
+
+enum JobPriority {
+  LOW
+  NORMAL
+  HIGH
+  URGENT
+}
+
+model Job {
+  id String @id @default(uuid())
+  userId String @map("user_id")
+  fileId String? @map("file_id")
+  
+  // Job configuration
+  jobType   JobType   @map("job_type")
+  priority  JobPriority @default(NORMAL)
+  status    JobStatus @default(PENDING)
+  
+  // Job data
+  payload Json @db.JsonB // Job-specific data
+  result  Json? @db.JsonB // Job results
+  
+  // Processing details
+  queueName    String @map("queue_name")
+  workerId     String? @map("worker_id") // Which worker processed this job
+  attempts     Int @default(0)
+  maxAttempts  Int @default(3) @map("max_attempts")
+  
+  // Timing
+  startedAt   DateTime? @map("started_at")
+  completedAt DateTime? @map("completed_at")
+  failedAt    DateTime? @map("failed_at")
+  timeoutAt   DateTime? @map("timeout_at")
+  
+  // Error handling
+  errorMessage String? @map("error_message") @db.Text
+  errorStack   String? @map("error_stack") @db.Text
+  
+  // Callbacks and webhooks
+  callbackUrl String? @map("callback_url")
+  internalToken String? @map("internal_token") // INTERNAL_SERVICE_TOKEN
+  
+  // Progress tracking
+  progress Int @default(0) // 0-100
+  progressMessage String? @map("progress_message")
+  
+  // TTL for cleanup
+  expiresAt DateTime? @map("expires_at")
+  
+  // Timestamps
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  file File? @relation(fields: [fileId], references: [id], onDelete: SetNull)
+  
+  @@index([userId])
+  @@index([fileId])
+  @@index([jobType])
+  @@index([status])
+  @@index([priority])
+  @@index([queueName])
+  @@index([createdAt])
+  @@index([expiresAt])
+  @@index([status, createdAt])
+  @@map("jobs")
+}

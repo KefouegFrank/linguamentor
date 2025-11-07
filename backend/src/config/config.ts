@@ -84,3 +84,38 @@ export const COOKIE_SECURE = (process.env.COOKIE_SECURE || 'false') === 'true';
 
 // Logging
 export const LOG_LEVEL = toStr(process.env.LOG_LEVEL, isProduction ? 'info' : 'debug');
+
+// AWS Configuration
+export const aws = {
+  region: toStr(process.env.AWS_REGION, 'us-east-1'),
+  accessKeyId: toStr(process.env.S3_ACCESS_KEY_ID),
+  secretAccessKey: toStr(process.env.S3_SECRET_ACCESS_KEY),
+  s3Bucket: toStr(process.env.S3_BUCKET),
+  s3Endpoint: toStr(process.env.S3_ENDPOINT), // For MinIO and other S3-compatible services
+};
+
+// Redis Configuration
+export const redis = {
+  url: toStr(process.env.REDIS_URL, 'redis://localhost:6379'),
+};
+
+// Internal Service Configuration
+export const internalService = {
+  token: toStr(process.env.INTERNAL_SERVICE_TOKEN),
+};
+
+// File Upload Configuration
+export const fileUpload = {
+  maxFileSize: toNum(process.env.MAX_FILE_SIZE, 500 * 1024 * 1024), // 500MB default
+  allowedMimeTypes: process.env.ALLOWED_MIME_TYPES?.split(',') || [
+    'audio/mpeg',
+    'audio/wav',
+    'audio/mp4',
+    'video/mp4',
+    'video/quicktime',
+    'image/jpeg',
+    'image/png',
+    'application/pdf',
+  ],
+  presignedUrlExpiry: toNum(process.env.PRESIGNED_URL_EXPIRY, 3600), // 1 hour default
+};
