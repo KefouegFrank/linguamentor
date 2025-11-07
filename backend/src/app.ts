@@ -1,13 +1,14 @@
 import express, { Application, Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
-import authRoutes from './routes/auth.routes';
+import { createAuthRouter } from './routes/auth.routes';
 import { corsConfig } from './config/auth.config';
 import { IS_DEVELOPMENT } from './config/config';
+import { QueueService } from './services/queue.service';
 
 // Note: Environment variables are loaded in config/config.ts
 
-export function createApp(): Application {
+export function createApp(queueService: QueueService): Application {
     const app = express();
 
     // Security
@@ -27,7 +28,7 @@ export function createApp(): Application {
     }
 
     // Mount routes
-    app.use('/api/auth', authRoutes);
+    app.use('/api/auth', createAuthRouter(queueService));
 
     // Health
     app.get('/health', (_req, res) => {

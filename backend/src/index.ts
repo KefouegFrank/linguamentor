@@ -3,12 +3,17 @@
  */
 import { createApp } from './app';
 import { prisma } from './prisma/client';
-import { PORT } from './config/config';
+import { config } from './config/config';
+import { createQueueService } from './services/queue.service';
 
-const app = createApp();
+// Create the queue service
+const queueService = createQueueService(config.redis.url);
 
-const server = app.listen(PORT, async () => {
-    console.log(`LinguaMentor backend listening on port ${PORT}`);
+const app = createApp(queueService);
+
+console.log('Starting server...');
+const server = app.listen(config.PORT, async () => {
+    console.log(`LinguaMentor backend listening on port ${config.PORT}`);
     try {
         await prisma.$connect();
         console.log('Connected to DB');
@@ -17,11 +22,13 @@ const server = app.listen(PORT, async () => {
         process.exit(1);
     }
 });
+console.log('Server started.');
 
 // Proper shutdown
 process.on('SIGINT', async () => {
     console.log('SIGINT received. Shutting down.');
     await prisma.$disconnect();
+    await queueService.close();
     server.close(() => process.exit(0));
 });
 

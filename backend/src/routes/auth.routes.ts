@@ -36,19 +36,21 @@ import {
 } from '../validation/auth.validation';
 import { securityConfig } from '../config/auth.config';
 import { createRateLimiter } from '../middleware/rateLimit.middleware';
+import { QueueService } from '../services/queue.service';
 
-const router = Router();
+export const createAuthRouter = (queueService: QueueService) => {
+  const router = Router();
 
-// Rate limiters (route-level)
-const loginLimiter = createRateLimiter({
-    windowMs: securityConfig.rateLimit.login.windowMs,
-    max: securityConfig.rateLimit.login.max,
-});
+  // Rate limiters (route-level)
+  const loginLimiter = createRateLimiter(queueService['connection'], {
+      windowMs: securityConfig.rateLimit.login.windowMs,
+      max: securityConfig.rateLimit.login.max,
+  });
 
-const refreshLimiter = createRateLimiter({
-    windowMs: securityConfig.rateLimit.refresh.windowMs,
-    max: securityConfig.rateLimit.refresh.max,
-});
+  const refreshLimiter = createRateLimiter(queueService['connection'], {
+      windowMs: securityConfig.rateLimit.refresh.windowMs,
+      max: securityConfig.rateLimit.refresh.max,
+  });
 
 /**
  * Public routes (no authentication required)
@@ -100,4 +102,5 @@ router.put('/profile', authenticate, validateBody(updateProfileSchema), updatePr
 router.delete('/account', authenticate, validateBody(deleteAccountSchema), deleteAccount);
 
 
-export default router;
+  return router;
+};

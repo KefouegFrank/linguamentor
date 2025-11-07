@@ -98,6 +98,8 @@ model User {
   refreshTokens           RefreshToken[]
   emailVerificationTokens EmailVerificationToken[]
   passwordResetTokens     PasswordResetToken[]
+  files                   File[]
+  jobs                    Job[]
 
   @@index([email])
   @@index([targetLanguage])
