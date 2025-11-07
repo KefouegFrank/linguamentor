@@ -4,8 +4,8 @@
  * Production-ready with error handling, logging, and retry logic
  */
 
-import nodemailer from 'nodemailer';
-import { securityConfig } from '../config/auth.config';
+import nodemailer from "nodemailer";
+import { securityConfig } from "../config/auth.config";
 
 /**
  * Email templates for different types of emails
@@ -40,14 +40,14 @@ export class EmailService {
 
   constructor() {
     this.config = {
-      host: process.env.SMTP_HOST || '',
-      port: parseInt(process.env.SMTP_PORT || '587'),
-      secure: process.env.SMTP_SECURE === 'true',
+      host: process.env.SMTP_HOST || "",
+      port: parseInt(process.env.SMTP_PORT || "587"),
+      secure: process.env.SMTP_SECURE === "true",
       auth: {
-        user: process.env.SMTP_USER || '',
-        pass: process.env.SMTP_PASSWORD || '',
+        user: process.env.SMTP_USER || "",
+        pass: process.env.SMTP_PASSWORD || "",
       },
-      from: process.env.EMAIL_FROM || 'noreply@lingumentor.com',
+      from: process.env.EMAIL_FROM || "noreply@lingumentor.com",
     };
 
     this.initializeTransporter();
@@ -76,12 +76,14 @@ export class EmailService {
           rateLimit: 5, // Max 5 messages per 20 seconds
         });
 
-        console.log('✅ Email service initialized successfully');
+        console.log("✅ Email service initialized successfully");
       } else {
-        console.log('⚠️ Email service not configured - emails will be logged to console');
+        console.log(
+          "⚠️ Email service not configured - emails will be logged to console"
+        );
       }
     } catch (error) {
-      console.error('❌ Failed to initialize email transporter:', error);
+      console.error("❌ Failed to initialize email transporter:", error);
       this.transporter = null;
     }
   }
@@ -91,16 +93,16 @@ export class EmailService {
    */
   async verifyConnection(): Promise<boolean> {
     if (!this.transporter) {
-      console.log('Email service not configured');
+      console.log("Email service not configured");
       return false;
     }
 
     try {
       await this.transporter.verify();
-      console.log('✅ Email transporter verified');
+      console.log("✅ Email transporter verified");
       return true;
     } catch (error) {
-      console.error('❌ Email transporter verification failed:', error);
+      console.error("❌ Email transporter verification failed:", error);
       return false;
     }
   }
@@ -108,17 +110,17 @@ export class EmailService {
   /**
    * Send email with retry logic and error handling
    */
-  private async sendEmailWithRetry(
+  public async sendEmailWithRetry(
     to: string,
     template: EmailTemplate,
     retryCount = 0
   ): Promise<void> {
     const maxRetries = 3;
-    
+
     try {
       if (!this.transporter) {
         // In development, log emails to console
-        console.log('\n📧 EMAIL (Development Mode)');
+        console.log("\n📧 EMAIL (Development Mode)");
         console.log(`To: ${to}`);
         console.log(`Subject: ${template.subject}`);
         console.log(`HTML: ${template.html}`);
@@ -136,17 +138,19 @@ export class EmailService {
 
       const result = await this.transporter.sendMail(mailOptions);
       console.log(`✅ Email sent successfully to ${to}:`, result.messageId);
-      
     } catch (error) {
-      console.error(`❌ Failed to send email to ${to} (attempt ${retryCount + 1}):`, error);
-      
+      console.error(
+        `❌ Failed to send email to ${to} (attempt ${retryCount + 1}):`,
+        error
+      );
+
       if (retryCount < maxRetries) {
         const delay = Math.pow(2, retryCount) * 1000; // Exponential backoff
         console.log(`🔄 Retrying in ${delay}ms...`);
-        await new Promise(resolve => setTimeout(resolve, delay));
+        await new Promise((resolve) => setTimeout(resolve, delay));
         return this.sendEmailWithRetry(to, template, retryCount + 1);
       }
-      
+
       throw error; // Re-throw after max retries
     }
   }
@@ -154,11 +158,14 @@ export class EmailService {
   /**
    * Generate email verification template
    */
-  private generateVerificationEmail(token: string, userName: string): EmailTemplate {
-    const verificationUrl = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/verify-email?token=${token}`;
-    
+  public generateVerificationEmail(
+    token: string,
+    userName: string
+  ): EmailTemplate {
+    const verificationUrl = `${process.env.FRONTEND_URL || "http://localhost:3000"}/verify-email?token=${token}`;
+
     return {
-      subject: 'Verify Your LinguaMentor Account',
+      subject: "Verify Your LinguaMentor Account",
       html: `
         <!DOCTYPE html>
         <html>
@@ -208,18 +215,21 @@ This verification link will expire in 24 hours for security reasons.
 If you didn't create this account, please ignore this email.
 
 This is an automated message from LinguaMentor.
-      `
+      `,
     };
   }
 
   /**
    * Generate password reset email template
    */
-  private generatePasswordResetEmail(token: string, userName: string): EmailTemplate {
-    const resetUrl = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/reset-password?token=${token}`;
-    
+  public generatePasswordResetEmail(
+    token: string,
+    userName: string
+  ): EmailTemplate {
+    const resetUrl = `${process.env.FRONTEND_URL || "http://localhost:3000"}/reset-password?token=${token}`;
+
     return {
-      subject: 'Reset Your LinguaMentor Password',
+      subject: "Reset Your LinguaMentor Password",
       html: `
         <!DOCTYPE html>
         <html>
@@ -270,33 +280,41 @@ ${resetUrl}
 ⚠️ Security Notice: This password reset link will expire in 1 hour for your security. If you didn't request this password reset, please ignore this email and your password will remain unchanged.
 
 This is an automated message from LinguaMentor.
-      `
+      `,
     };
   }
 
   /**
    * Send email verification email
    */
-  async sendVerificationEmail(email: string, token: string, userName: string): Promise<void> {
+  async sendVerificationEmail(
+    email: string,
+    token: string,
+    userName: string
+  ): Promise<void> {
     try {
       const template = this.generateVerificationEmail(token, userName);
       await this.sendEmailWithRetry(email, template);
     } catch (error) {
-      console.error('Failed to send verification email:', error);
-      throw new Error('Failed to send verification email');
+      console.error("Failed to send verification email:", error);
+      throw new Error("Failed to send verification email");
     }
   }
 
   /**
    * Send password reset email
    */
-  async sendPasswordResetEmail(email: string, token: string, userName: string): Promise<void> {
+  async sendPasswordResetEmail(
+    email: string,
+    token: string,
+    userName: string
+  ): Promise<void> {
     try {
       const template = this.generatePasswordResetEmail(token, userName);
       await this.sendEmailWithRetry(email, template);
     } catch (error) {
-      console.error('Failed to send password reset email:', error);
-      throw new Error('Failed to send password reset email');
+      console.error("Failed to send password reset email:", error);
+      throw new Error("Failed to send password reset email");
     }
   }
 }

@@ -9,7 +9,7 @@ import { OAuth2Client } from 'google-auth-library';
 import axios from 'axios';
 import crypto from 'node:crypto';
 import { authService } from '../services/auth.service';
-import { sanitizeUser } from '../utils/sanitize';
+import { sanitizeUser } from '../utils/auth.utils';
 import { securityConfig } from '../config/auth.config';
 
 /**

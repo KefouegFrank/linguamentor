@@ -54,53 +54,55 @@ enum ExamType {
 }
 
 model User {
-  id                String           @id @default(uuid())
-  email             String           @unique
-  passwordHash      String           @map("password_hash")
-  firstName         String?          @map("first_name")
-  lastName          String?          @map("last_name")
-  role              UserRole         @default(LEARNER)
-  
+  id           String   @id @default(uuid())
+  email        String   @unique
+  passwordHash String   @map("password_hash")
+  firstName    String?  @map("first_name")
+  lastName     String?  @map("last_name")
+  role         UserRole @default(LEARNER)
+
   // Learning preferences
-  targetLanguage    TargetLanguage   @map("target_language")
-  nativeLanguage    String?          @map("native_language")
-  currentLevel      CEFRLevel        @default(A1) @map("current_level")
-  targetExam        ExamType?        @map("target_exam")
-  
+  targetLanguage TargetLanguage @map("target_language")
+  nativeLanguage String?        @map("native_language")
+  currentLevel   CEFRLevel      @default(A1) @map("current_level")
+  targetExam     ExamType?      @map("target_exam")
+
   // Progress tracking
-  readinessScore    Float            @default(0) @map("readiness_score") // 0-100 exam readiness
-  totalStudyTime    Int              @default(0) @map("total_study_time") // in minutes
-  currentStreak     Int              @default(0) @map("current_streak") // consecutive days
-  longestStreak     Int              @default(0) @map("longest_streak")
-  lastActiveAt      DateTime?        @map("last_active_at")
-  
+  readinessScore Float     @default(0) @map("readiness_score") // 0-100 exam readiness
+  totalStudyTime Int       @default(0) @map("total_study_time") // in minutes
+  currentStreak  Int       @default(0) @map("current_streak") // consecutive days
+  longestStreak  Int       @default(0) @map("longest_streak")
+  lastActiveAt   DateTime? @map("last_active_at")
+
   // Account management
-  isActive          Boolean          @default(true) @map("is_active")
-  emailVerified     Boolean          @default(false) @map("email_verified")
-  subscriptionTier  String           @default("free") @map("subscription_tier") // free, premium, enterprise
-  
+  isActive         Boolean @default(true) @map("is_active")
+  emailVerified    Boolean @default(false) @map("email_verified")
+  subscriptionTier String  @default("free") @map("subscription_tier") // free, premium, enterprise
+
   // OAuth fields
-  oauthProvider     String?          @map("oauth_provider")
-  oauthId           String?          @map("oauth_id")
-  
+  oauthProvider String? @map("oauth_provider")
+  oauthId       String? @map("oauth_id")
+
   // Timestamps
-  createdAt         DateTime         @default(now()) @map("created_at")
-  updatedAt         DateTime         @updatedAt @map("updated_at")
-  
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
   // Relations
-  lessons           Lesson[]
-  sessions          Session[]
-  assessments       Assessment[]
-  aiInteractions    AIInteraction[]
-  analyticsSummaries AnalyticsSummary[]
-  achievements      Achievement[]
-  evaluationResults EvaluationResult[]
-  refreshTokens     RefreshToken[]
-  
-  @@map("users")
+  lessons                 Lesson[]
+  sessions                Session[]
+  assessments             Assessment[]
+  aiInteractions          AIInteraction[]
+  analyticsSummaries      AnalyticsSummary[]
+  achievements            Achievement[]
+  evaluationResults       EvaluationResult[]
+  refreshTokens           RefreshToken[]
+  emailVerificationTokens EmailVerificationToken[]
+  passwordResetTokens     PasswordResetToken[]
+
   @@index([email])
   @@index([targetLanguage])
   @@index([currentLevel])
+  @@map("users")
 }
 
 // ============================================
@@ -108,21 +110,51 @@ model User {
 // ============================================
 
 model RefreshToken {
-  id            String   @id @default(uuid())
-  tokenHash     String   @map("token_hash") // SHA-256 hashed value of the token
-  expiresAt     DateTime @map("expires_at")
-  revoked       Boolean  @default(false)
-  replacedById  String?  @map("replaced_by_id") // For token rotation tracking
-  createdAt     DateTime @default(now()) @map("created_at")
-  
+  id           String   @id @default(uuid())
+  tokenHash    String   @map("token_hash") // SHA-256 hashed value of the token
+  expiresAt    DateTime @map("expires_at")
+  revoked      Boolean  @default(false)
+  replacedById String?  @map("replaced_by_id") // For token rotation tracking
+  createdAt    DateTime @default(now()) @map("created_at")
+
   // Relations
-  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  userId        String   @map("user_id")
-  
-  @@map("refresh_tokens")
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId String @map("user_id")
+
   @@index([userId])
   @@index([tokenHash])
   @@index([expiresAt])
+  @@map("refresh_tokens")
+}
+
+model EmailVerificationToken {
+  id        String   @id @default(cuid())
+  token     String   @unique
+  userId    String   @map("user_id")
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  used      Boolean  @default(false)
+
+  @@index([userId])
+  @@index([token])
+  @@index([expiresAt])
+  @@map("email_verification_tokens")
+}
+
+model PasswordResetToken {
+  id        String   @id @default(cuid())
+  token     String   @unique
+  userId    String   @map("user_id")
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  used      Boolean  @default(false)
+
+  @@index([userId])
+  @@index([token])
+  @@index([expiresAt])
+  @@map("password_reset_tokens")
 }
 
 // ============================================
@@ -140,49 +172,49 @@ enum SkillType {
 }
 
 enum LessonDifficulty {
-  BEGINNER     // A1-A2
+  BEGINNER // A1-A2
   INTERMEDIATE // B1-B2
-  ADVANCED     // C1-C2
+  ADVANCED // C1-C2
 }
 
 model Lesson {
-  id                String           @id @default(uuid())
-  userId            String           @map("user_id")
-  
+  id     String @id @default(uuid())
+  userId String @map("user_id")
+
   // Lesson metadata (AI-generated)
-  title             String
-  description       String?
-  topic             String           // e.g., "Daily Conversations", "Business English"
-  skillType         SkillType        @map("skill_type")
-  difficulty        LessonDifficulty
-  cefrLevel         CEFRLevel        @map("cefr_level")
-  targetLanguage    TargetLanguage   @map("target_language")
-  
+  title          String
+  description    String?
+  topic          String // e.g., "Daily Conversations", "Business English"
+  skillType      SkillType        @map("skill_type")
+  difficulty     LessonDifficulty
+  cefrLevel      CEFRLevel        @map("cefr_level")
+  targetLanguage TargetLanguage   @map("target_language")
+
   // AI generation context
-  generatedPrompt   String?          @map("generated_prompt") @db.Text
-  objectives        Json?            // Array of learning objectives
-  
+  generatedPrompt String? @map("generated_prompt") @db.Text
+  objectives      Json? // Array of learning objectives
+
   // Lesson content (AI-generated)
-  content           Json?            @db.JsonB // Flexible structure for dialogues, exercises, etc.
-  summaryNotes      String?          @map("summary_notes") @db.Text
-  
+  content      Json?   @db.JsonB // Flexible structure for dialogues, exercises, etc.
+  summaryNotes String? @map("summary_notes") @db.Text
+
   // Status
-  isCompleted       Boolean          @default(false) @map("is_completed")
-  completedAt       DateTime?        @map("completed_at")
-  
+  isCompleted Boolean   @default(false) @map("is_completed")
+  completedAt DateTime? @map("completed_at")
+
   // Timestamps
-  createdAt         DateTime         @default(now()) @map("created_at")
-  updatedAt         DateTime         @updatedAt @map("updated_at")
-  
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
   // Relations
-  user              User             @relation(fields: [userId], references: [id], onDelete: Cascade)
-  sessions          Session[]
-  
-  @@map("lessons")
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sessions Session[]
+
   @@index([userId])
   @@index([skillType])
   @@index([cefrLevel])
   @@index([isCompleted])
+  @@map("lessons")
 }
 
 // ============================================
@@ -203,44 +235,44 @@ enum SessionStatus {
 }
 
 model Session {
-  id                String           @id @default(uuid())
-  userId            String           @map("user_id")
-  lessonId          String?          @map("lesson_id")
-  
+  id       String  @id @default(uuid())
+  userId   String  @map("user_id")
+  lessonId String? @map("lesson_id")
+
   // Session info
-  sessionType       SessionType      @map("session_type")
-  status            SessionStatus    @default(IN_PROGRESS)
-  
+  sessionType SessionType   @map("session_type")
+  status      SessionStatus @default(IN_PROGRESS)
+
   // Performance metrics
-  durationMinutes   Int              @default(0) @map("duration_minutes")
-  accuracyScore     Float?           @map("accuracy_score") // 0-100
-  engagementScore   Float?           @map("engagement_score") // 0-100
-  
+  durationMinutes Int    @default(0) @map("duration_minutes")
+  accuracyScore   Float? @map("accuracy_score") // 0-100
+  engagementScore Float? @map("engagement_score") // 0-100
+
   // AI interaction metadata
-  totalInteractions Int              @default(0) @map("total_interactions")
-  correctAnswers    Int              @default(0) @map("correct_answers")
-  incorrectAnswers  Int              @default(0) @map("incorrect_answers")
-  
+  totalInteractions Int @default(0) @map("total_interactions")
+  correctAnswers    Int @default(0) @map("correct_answers")
+  incorrectAnswers  Int @default(0) @map("incorrect_answers")
+
   // Session context (stored for continuity)
-  contextData       Json?            @map("context_data") @db.JsonB // Redis cache key, conversation state
-  
+  contextData Json? @map("context_data") @db.JsonB // Redis cache key, conversation state
+
   // Timestamps
-  startedAt         DateTime         @default(now()) @map("started_at")
-  endedAt           DateTime?        @map("ended_at")
-  createdAt         DateTime         @default(now()) @map("created_at")
-  updatedAt         DateTime         @updatedAt @map("updated_at")
-  
+  startedAt DateTime  @default(now()) @map("started_at")
+  endedAt   DateTime? @map("ended_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+
   // Relations
-  user              User             @relation(fields: [userId], references: [id], onDelete: Cascade)
-  lesson            Lesson?          @relation(fields: [lessonId], references: [id], onDelete: SetNull)
-  aiInteractions    AIInteraction[]
-  feedbacks         Feedback[]
-  
-  @@map("sessions")
+  user           User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  lesson         Lesson?         @relation(fields: [lessonId], references: [id], onDelete: SetNull)
+  aiInteractions AIInteraction[]
+  feedbacks      Feedback[]
+
   @@index([userId])
   @@index([sessionType])
   @@index([status])
   @@index([startedAt])
+  @@map("sessions")
 }
 
 // ============================================
@@ -256,39 +288,39 @@ enum InteractionType {
 }
 
 model AIInteraction {
-  id                String           @id @default(uuid())
-  userId            String           @map("user_id")
-  sessionId         String           @map("session_id")
-  
+  id        String @id @default(uuid())
+  userId    String @map("user_id")
+  sessionId String @map("session_id")
+
   // Interaction details
-  interactionType   InteractionType  @map("interaction_type")
-  userInput         String?          @map("user_input") @db.Text
-  aiResponse        String?          @map("ai_response") @db.Text
-  
+  interactionType InteractionType @map("interaction_type")
+  userInput       String?         @map("user_input") @db.Text
+  aiResponse      String?         @map("ai_response") @db.Text
+
   // Audio data (if voice interaction)
-  audioUrl          String?          @map("audio_url") // S3 URL for audio files
-  transcription     String?          @db.Text
-  
+  audioUrl      String? @map("audio_url") // S3 URL for audio files
+  transcription String? @db.Text
+
   // AI evaluation
-  isCorrect         Boolean?         @map("is_correct")
-  correctionText    String?          @map("correction_text") @db.Text
-  
+  isCorrect      Boolean? @map("is_correct")
+  correctionText String?  @map("correction_text") @db.Text
+
   // Context & metadata
-  promptContext     Json?            @map("prompt_context") @db.JsonB
-  modelMetadata     Json?            @map("model_metadata") @db.JsonB // model version, latency, etc.
-  
+  promptContext Json? @map("prompt_context") @db.JsonB
+  modelMetadata Json? @map("model_metadata") @db.JsonB // model version, latency, etc.
+
   // Timestamps
-  createdAt         DateTime         @default(now()) @map("created_at")
-  
+  createdAt DateTime @default(now()) @map("created_at")
+
   // Relations
-  user              User             @relation(fields: [userId], references: [id], onDelete: Cascade)
-  session           Session          @relation(fields: [sessionId], references: [id], onDelete: Cascade)
-  
-  @@map("ai_interactions")
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
   @@index([userId])
   @@index([sessionId])
   @@index([interactionType])
   @@index([createdAt])
+  @@map("ai_interactions")
 }
 
 // ============================================
@@ -303,50 +335,50 @@ enum AssessmentType {
 }
 
 model Assessment {
-  id                String           @id @default(uuid())
-  userId            String           @map("user_id")
-  
+  id     String @id @default(uuid())
+  userId String @map("user_id")
+
   // Assessment metadata
-  assessmentType    AssessmentType   @map("assessment_type")
-  examType          ExamType?        @map("exam_type")
-  skillType         SkillType?       @map("skill_type") // If skill-specific
-  
+  assessmentType AssessmentType @map("assessment_type")
+  examType       ExamType?      @map("exam_type")
+  skillType      SkillType?     @map("skill_type") // If skill-specific
+
   // Scoring
-  totalScore        Float            @map("total_score")
-  maxScore          Float            @map("max_score")
-  percentageScore   Float            @map("percentage_score")
-  cefrLevel         CEFRLevel        @map("cefr_level")
-  
+  totalScore      Float     @map("total_score")
+  maxScore        Float     @map("max_score")
+  percentageScore Float     @map("percentage_score")
+  cefrLevel       CEFRLevel @map("cefr_level")
+
   // Breakdown by skill
-  readingScore      Float?           @map("reading_score")
-  writingScore      Float?           @map("writing_score")
-  speakingScore     Float?           @map("speaking_score")
-  listeningScore    Float?           @map("listening_score")
-  
+  readingScore   Float? @map("reading_score")
+  writingScore   Float? @map("writing_score")
+  speakingScore  Float? @map("speaking_score")
+  listeningScore Float? @map("listening_score")
+
   // AI feedback
-  overallFeedback   String?          @map("overall_feedback") @db.Text
-  strengths         Json?            @db.JsonB // Array of strings
-  weaknesses        Json?            @db.JsonB // Array of strings
-  recommendations   Json?            @db.JsonB // Array of strings
-  
+  overallFeedback String? @map("overall_feedback") @db.Text
+  strengths       Json?   @db.JsonB // Array of strings
+  weaknesses      Json?   @db.JsonB // Array of strings
+  recommendations Json?   @db.JsonB // Array of strings
+
   // Exam details
-  durationMinutes   Int?             @map("duration_minutes")
-  isPassed          Boolean?         @map("is_passed")
-  
+  durationMinutes Int?     @map("duration_minutes")
+  isPassed        Boolean? @map("is_passed")
+
   // Timestamps
-  completedAt       DateTime         @default(now()) @map("completed_at")
-  createdAt         DateTime         @default(now()) @map("created_at")
-  
+  completedAt DateTime @default(now()) @map("completed_at")
+  createdAt   DateTime @default(now()) @map("created_at")
+
   // Relations
-  user              User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user              User               @relation(fields: [userId], references: [id], onDelete: Cascade)
   evaluationResults EvaluationResult[]
   feedbacks         Feedback[]
-  
-  @@map("assessments")
+
   @@index([userId])
   @@index([assessmentType])
   @@index([examType])
   @@index([completedAt])
+  @@map("assessments")
 }
 
 // ============================================
@@ -365,36 +397,36 @@ enum EvaluationCategory {
 }
 
 model EvaluationResult {
-  id                String              @id @default(uuid())
-  userId            String              @map("user_id")
-  assessmentId      String?             @map("assessment_id")
-  
+  id           String  @id @default(uuid())
+  userId       String  @map("user_id")
+  assessmentId String? @map("assessment_id")
+
   // Evaluation metadata
-  skillType         SkillType           @map("skill_type")
-  category          EvaluationCategory
-  
+  skillType SkillType          @map("skill_type")
+  category  EvaluationCategory
+
   // Scoring
-  score             Float
-  maxScore          Float               @map("max_score")
-  rubricUsed        String?             @map("rubric_used") // e.g., "IELTS Writing Band Descriptor"
-  
+  score      Float
+  maxScore   Float   @map("max_score")
+  rubricUsed String? @map("rubric_used") // e.g., "IELTS Writing Band Descriptor"
+
   // AI analysis
-  detailedFeedback  String?             @map("detailed_feedback") @db.Text
-  errorExamples     Json?               @map("error_examples") @db.JsonB
-  improvementTips   Json?               @map("improvement_tips") @db.JsonB
-  
+  detailedFeedback String? @map("detailed_feedback") @db.Text
+  errorExamples    Json?   @map("error_examples") @db.JsonB
+  improvementTips  Json?   @map("improvement_tips") @db.JsonB
+
   // Timestamps
-  createdAt         DateTime            @default(now()) @map("created_at")
-  
+  createdAt DateTime @default(now()) @map("created_at")
+
   // Relations
-  user              User                @relation(fields: [userId], references: [id], onDelete: Cascade)
-  assessment        Assessment?         @relation(fields: [assessmentId], references: [id], onDelete: SetNull)
-  
-  @@map("evaluation_results")
+  user       User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  assessment Assessment? @relation(fields: [assessmentId], references: [id], onDelete: SetNull)
+
   @@index([userId])
   @@index([assessmentId])
   @@index([skillType])
   @@index([category])
+  @@map("evaluation_results")
 }
 
 // ============================================
@@ -410,35 +442,35 @@ enum FeedbackType {
 }
 
 model Feedback {
-  id                String           @id @default(uuid())
-  sessionId         String?          @map("session_id")
-  assessmentId      String?          @map("assessment_id")
-  
+  id           String  @id @default(uuid())
+  sessionId    String? @map("session_id")
+  assessmentId String? @map("assessment_id")
+
   // Feedback details
-  feedbackType      FeedbackType     @map("feedback_type")
-  category          EvaluationCategory?
-  
+  feedbackType FeedbackType        @map("feedback_type")
+  category     EvaluationCategory?
+
   // Content
-  originalText      String?          @map("original_text") @db.Text
-  correctedText     String?          @map("corrected_text") @db.Text
-  explanation       String           @db.Text
-  
+  originalText  String? @map("original_text") @db.Text
+  correctedText String? @map("corrected_text") @db.Text
+  explanation   String  @db.Text
+
   // Metadata
-  severity          String?          // "low", "medium", "high"
-  isAddressed       Boolean          @default(false) @map("is_addressed")
-  
+  severity    String? // "low", "medium", "high"
+  isAddressed Boolean @default(false) @map("is_addressed")
+
   // Timestamps
-  createdAt         DateTime         @default(now()) @map("created_at")
-  
+  createdAt DateTime @default(now()) @map("created_at")
+
   // Relations
-  session           Session?         @relation(fields: [sessionId], references: [id], onDelete: Cascade)
-  assessment        Assessment?      @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
-  
-  @@map("feedbacks")
+  session    Session?    @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  assessment Assessment? @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
+
   @@index([sessionId])
   @@index([assessmentId])
   @@index([feedbackType])
   @@index([isAddressed])
+  @@map("feedbacks")
 }
 
 // ============================================
@@ -453,48 +485,48 @@ enum AnalyticsPeriod {
 }
 
 model AnalyticsSummary {
-  id                String           @id @default(uuid())
-  userId            String           @map("user_id")
-  
+  id     String @id @default(uuid())
+  userId String @map("user_id")
+
   // Period
-  period            AnalyticsPeriod
-  periodStart       DateTime         @map("period_start")
-  periodEnd         DateTime         @map("period_end")
-  
+  period      AnalyticsPeriod
+  periodStart DateTime        @map("period_start")
+  periodEnd   DateTime        @map("period_end")
+
   // Activity metrics
-  totalSessions     Int              @default(0) @map("total_sessions")
-  totalStudyTime    Int              @default(0) @map("total_study_time") // minutes
-  lessonsCompleted  Int              @default(0) @map("lessons_completed")
-  assessmentsTaken  Int              @default(0) @map("assessments_taken")
-  
+  totalSessions    Int @default(0) @map("total_sessions")
+  totalStudyTime   Int @default(0) @map("total_study_time") // minutes
+  lessonsCompleted Int @default(0) @map("lessons_completed")
+  assessmentsTaken Int @default(0) @map("assessments_taken")
+
   // Performance metrics
-  averageAccuracy   Float?           @map("average_accuracy")
-  currentStreak     Int              @default(0) @map("current_streak")
-  cefrProgress      String?          @map("cefr_progress") // e.g., "A2 -> B1"
-  readinessScore    Float?           @map("readiness_score")
-  
+  averageAccuracy Float?  @map("average_accuracy")
+  currentStreak   Int     @default(0) @map("current_streak")
+  cefrProgress    String? @map("cefr_progress") // e.g., "A2 -> B1"
+  readinessScore  Float?  @map("readiness_score")
+
   // Skill breakdown
-  speakingScore     Float?           @map("speaking_score")
-  listeningScore    Float?           @map("listening_score")
-  readingScore      Float?           @map("reading_score")
-  writingScore      Float?           @map("writing_score")
-  
+  speakingScore  Float? @map("speaking_score")
+  listeningScore Float? @map("listening_score")
+  readingScore   Float? @map("reading_score")
+  writingScore   Float? @map("writing_score")
+
   // Weaknesses & strengths
-  weakAreas         Json?            @map("weak_areas") @db.JsonB // Array of skill areas
-  strongAreas       Json?            @map("strong_areas") @db.JsonB
-  
+  weakAreas   Json? @map("weak_areas") @db.JsonB // Array of skill areas
+  strongAreas Json? @map("strong_areas") @db.JsonB
+
   // Timestamps
-  createdAt         DateTime         @default(now()) @map("created_at")
-  updatedAt         DateTime         @updatedAt @map("updated_at")
-  
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
   // Relations
-  user              User             @relation(fields: [userId], references: [id], onDelete: Cascade)
-  
-  @@map("analytics_summaries")
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
   @@unique([userId, period, periodStart])
   @@index([userId])
   @@index([period])
   @@index([periodStart])
+  @@map("analytics_summaries")
 }
 
 // ============================================
@@ -510,35 +542,35 @@ enum AchievementCategory {
 }
 
 model Achievement {
-  id                String              @id @default(uuid())
-  userId            String              @map("user_id")
-  
+  id     String @id @default(uuid())
+  userId String @map("user_id")
+
   // Achievement details
-  name              String
-  description       String?
-  category          AchievementCategory
-  iconUrl           String?             @map("icon_url")
-  
+  name        String
+  description String?
+  category    AchievementCategory
+  iconUrl     String?             @map("icon_url")
+
   // Progress
-  currentProgress   Int                 @default(0) @map("current_progress")
-  targetProgress    Int                 @map("target_progress")
-  isUnlocked        Boolean             @default(false) @map("is_unlocked")
-  
+  currentProgress Int     @default(0) @map("current_progress")
+  targetProgress  Int     @map("target_progress")
+  isUnlocked      Boolean @default(false) @map("is_unlocked")
+
   // Rewards
-  xpReward          Int?                @map("xp_reward")
-  badgeLevel        String?             @map("badge_level") // bronze, silver, gold
-  
+  xpReward   Int?    @map("xp_reward")
+  badgeLevel String? @map("badge_level") // bronze, silver, gold
+
   // Timestamps
-  unlockedAt        DateTime?           @map("unlocked_at")
-  createdAt         DateTime            @default(now()) @map("created_at")
-  
+  unlockedAt DateTime? @map("unlocked_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
+
   // Relations
-  user              User                @relation(fields: [userId], references: [id], onDelete: Cascade)
-  
-  @@map("achievements")
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
   @@index([userId])
   @@index([category])
   @@index([isUnlocked])
+  @@map("achievements")
 }
 
 // ============================================
@@ -555,39 +587,39 @@ enum ModelProvider {
 }
 
 model AIModelRun {
-  id                String           @id @default(uuid())
-  
+  id String @id @default(uuid())
+
   // Model metadata
-  modelProvider     ModelProvider    @map("model_provider")
-  modelName         String           @map("model_name")
-  modelVersion      String?          @map("model_version")
-  
+  modelProvider ModelProvider @map("model_provider")
+  modelName     String        @map("model_name")
+  modelVersion  String?       @map("model_version")
+
   // Request details
-  endpoint          String
-  promptHash        String?          @map("prompt_hash") // SHA-256 hash for privacy
-  requestPayload    Json?            @map("request_payload") @db.JsonB
-  
+  endpoint       String
+  promptHash     String? @map("prompt_hash") // SHA-256 hash for privacy
+  requestPayload Json?   @map("request_payload") @db.JsonB
+
   // Response details
-  responseHash      String?          @map("response_hash")
-  responseMetadata  Json?            @map("response_metadata") @db.JsonB
-  
+  responseHash     String? @map("response_hash")
+  responseMetadata Json?   @map("response_metadata") @db.JsonB
+
   // Performance
-  latencyMs         Int?             @map("latency_ms")
-  tokenCount        Int?             @map("token_count")
-  estimatedCost     Float?           @map("estimated_cost")
-  
+  latencyMs     Int?   @map("latency_ms")
+  tokenCount    Int?   @map("token_count")
+  estimatedCost Float? @map("estimated_cost")
+
   // Status
-  isSuccess         Boolean          @default(true) @map("is_success")
-  errorMessage      String?          @map("error_message") @db.Text
-  
+  isSuccess    Boolean @default(true) @map("is_success")
+  errorMessage String? @map("error_message") @db.Text
+
   // Timestamps
-  createdAt         DateTime         @default(now()) @map("created_at")
-  
-  @@map("ai_model_runs")
+  createdAt DateTime @default(now()) @map("created_at")
+
   @@index([modelProvider])
   @@index([modelName])
   @@index([isSuccess])
   @@index([createdAt])
+  @@map("ai_model_runs")
 }
 
 // ============================================
@@ -602,29 +634,29 @@ enum LogLevel {
 }
 
 model AdminLog {
-  id                String           @id @default(uuid())
-  
+  id String @id @default(uuid())
+
   // Log details
-  logLevel          LogLevel         @map("log_level")
-  message           String           @db.Text
-  category          String           // "auth", "payment", "ai", "system"
-  
+  logLevel LogLevel @map("log_level")
+  message  String   @db.Text
+  category String // "auth", "payment", "ai", "system"
+
   // Context
-  userId            String?          @map("user_id")
-  sessionId         String?          @map("session_id")
-  ipAddress         String?          @map("ip_address")
-  userAgent         String?          @map("user_agent")
-  
+  userId    String? @map("user_id")
+  sessionId String? @map("session_id")
+  ipAddress String? @map("ip_address")
+  userAgent String? @map("user_agent")
+
   // Additional data
-  metadata          Json?            @db.JsonB
-  stackTrace        String?          @map("stack_trace") @db.Text
-  
+  metadata   Json?   @db.JsonB
+  stackTrace String? @map("stack_trace") @db.Text
+
   // Timestamps
-  createdAt         DateTime         @default(now()) @map("created_at")
-  
-  @@map("admin_logs")
+  createdAt DateTime @default(now()) @map("created_at")
+
   @@index([logLevel])
   @@index([category])
   @@index([userId])
   @@index([createdAt])
+  @@map("admin_logs")
 }
