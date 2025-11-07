@@ -217,7 +217,7 @@ export const requestPasswordReset = async (req: Request, res: Response): Promise
           await emailService.sendPasswordResetEmail(
             email,
             resetToken,
-            user.firstName || user.username
+            user.firstName || user.email
           );
         }
       } catch (emailError) {
@@ -299,7 +299,7 @@ export const resendVerificationEmail = async (req: Request, res: Response): Prom
       await emailService.sendVerificationEmail(
         user.email,
         verificationToken,
-        user.firstName || user.username
+        user.firstName || user.email
       );
     } catch (emailError) {
       console.error('Failed to send verification email:', emailError);
@@ -352,16 +352,17 @@ export const changePassword = async (req: Request, res: Response): Promise<void>
 export const updateProfile = async (req: Request, res: Response): Promise<void> => {
   try {
     const userId = req.user!.userId;
-    const { firstName, lastName, username, bio, avatar, language, timezone } = req.body;
+    const { firstName, lastName, targetLanguage, nativeLanguage, targetExam, currentLevel } = req.body;
     
     const updatedUser = await authService.updateProfile(userId, {
-      firstName,
-      lastName,
-      username,
-      bio,
-      avatar,
-      language,
-      timezone,
+       firstName,
+  lastName,
+  targetLanguage,
+  nativeLanguage,
+  targetExam,
+  currentLevel,
+      // bio,
+      // avatar,
     });
     
     res.status(200).json({

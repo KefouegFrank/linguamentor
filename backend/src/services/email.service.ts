@@ -60,7 +60,7 @@ export class EmailService {
     try {
       // Only create transporter if email configuration is provided
       if (this.config.host && this.config.auth.user && this.config.auth.pass) {
-        this.transporter = nodemailer.createTransporter({
+        this.transporter = nodemailer.createTransport({
           host: this.config.host,
           port: this.config.port,
           secure: this.config.secure,

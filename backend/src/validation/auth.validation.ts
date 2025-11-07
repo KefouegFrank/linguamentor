@@ -100,6 +100,41 @@ export const emailVerificationSchema = z.object({
 });
 
 /**
+ * Change password validation schema
+ */
+export const changePasswordSchema = z.object({
+  currentPassword: z.string().min(1, 'Current password is required'),
+  newPassword: passwordSchema,
+});
+
+/**
+ * Update profile validation schema
+ */
+export const updateProfileSchema = z.object({
+  firstName: z.string().min(1).max(50).optional(),
+  lastName: z.string().min(1).max(50).optional(),
+  targetLanguage: z.enum(TargetLanguageValues).optional(),
+  nativeLanguage: z.string().min(2).max(50).optional(),
+  targetExam: z.enum(ExamTypeValues).optional(),
+  currentLevel: z.enum(['A1', 'A2', 'B1', 'B2', 'C1', 'C2']).optional(),
+});
+
+/**
+ * Delete account validation schema
+ */
+export const deleteAccountSchema = z.object({
+  password: z.string().min(1, 'Password is required'),
+});
+
+/**
+ * OAuth login validation schema
+ */
+export const oauthLoginSchema = z.object({
+  provider: z.enum(['google', 'facebook', 'apple']),
+  accessToken: z.string().min(1, 'Access token is required'),
+});
+
+/**
  * Type inference from schemas
  */
 export type RegisterInput = z.infer<typeof registerSchema>;
@@ -108,3 +143,7 @@ export type RefreshTokenInput = z.infer<typeof refreshTokenSchema>;
 export type PasswordResetRequestInput = z.infer<typeof passwordResetRequestSchema>;
 export type PasswordResetConfirmInput = z.infer<typeof passwordResetConfirmSchema>;
 export type EmailVerificationInput = z.infer<typeof emailVerificationSchema>;
+export type ChangePasswordInput = z.infer<typeof changePasswordSchema>;
+export type UpdateProfileInput = z.infer<typeof updateProfileSchema>;
+export type DeleteAccountInput = z.infer<typeof deleteAccountSchema>;
+export type OAuthLoginInput = z.infer<typeof oauthLoginSchema>;

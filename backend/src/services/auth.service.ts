@@ -3,6 +3,7 @@
  * Handles all authentication business logic including registration, login, and token management
  */
 
+import { User } from '@prisma/client';
 import {
     RegisterRequest,
     LoginRequest,
@@ -10,6 +11,8 @@ import {
     UserResponse,
     AccessTokenPayload,
     RefreshTokenPayload,
+    TargetLanguage,
+    ExamType,
 } from '../types/auth.types';
 import {
     hashPassword,
@@ -25,7 +28,7 @@ import {
 } from '../utils/auth.utils';
 import { securityConfig } from '../config/auth.config';
 import { prisma } from '../prisma/client';
-import crypto from 'node:crypto';
+import crypto, { randomBytes } from 'node:crypto';
 import { emailService } from './email.service';
 
 
@@ -58,41 +61,37 @@ export class AuthService {
         // Hash password
         const passwordHash = await hashPassword(data.password);
 
-        // Generate email verification token
-        const verificationToken = crypto.randomUUID();
-        const verificationTokenExpiry = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
-
         // Create user
         const user = await prisma.user.create({
             data: {
                 email: data.email.toLowerCase(),
                 passwordHash,
-                firstName: data.firstName,
-                lastName: data.lastName,
-                targetLanguage: data.targetLanguage,
-                nativeLanguage: data.nativeLanguage,
-                targetExam: data.targetExam,
+                firstName: data.firstName || null,
+                lastName: data.lastName || null,
+                targetLanguage: data.targetLanguage as TargetLanguage,
+                nativeLanguage: data.nativeLanguage || null,
+                targetExam: data.targetExam as ExamType || null,
                 currentLevel: 'A1', // Default starting level
+                role: 'LEARNER',
+                readinessScore: 0,
+                totalStudyTime: 0,
+                currentStreak: 0,
+                longestStreak: 0,
+                isActive: true,
+                emailVerified: false,
+                subscriptionTier: 'FREE',
                 lastActiveAt: new Date(),
-                emailVerificationToken: verificationToken,
-                emailVerificationExpiry: verificationTokenExpiry,
+                createdAt: new Date(),
+                updatedAt: new Date(),
             },
         });
 
         // Generate tokens
         const { accessToken, refreshToken } = await this.generateTokenPair(user.id, user.email, user.role);
 
-        // Send verification email (async - don't wait)
-        try {
-            await emailService.sendVerificationEmail(
-                user.email,
-                verificationToken,
-                user.firstName || user.email
-            );
-        } catch (emailError) {
-            console.error('Failed to send verification email:', emailError);
-            // Continue even if email fails
-        }
+        // Skip email verification for now since the User model doesn't have verification fields
+        // TODO: Add email verification functionality when the schema is updated
+        console.log('User registration completed without email verification');
 
         return {
             accessToken,
@@ -156,6 +155,27 @@ export class AuthService {
             refreshToken,
             user: sanitizeUser(user) as UserResponse,
         };
+    }
+
+    /**
+     * Generate access and refresh tokens
+     */
+    async generateTokens(userId: string): Promise<{ accessToken: string; refreshToken: string }> {
+        try {
+            const user = await prisma.user.findUnique({ where: { id: userId } });
+            if (!user) {
+                throw new Error('User not found');
+            }
+            const accessTokenPayload = { userId: user.id, email: user.email, role: user.role };
+            const tokenId = randomBytes(16).toString('hex');
+            const refreshTokenPayload = { userId: user.id, tokenId };
+            const accessToken = generateAccessToken(accessTokenPayload);
+            const refreshToken = await generateRefreshToken(refreshTokenPayload);
+            return { accessToken, refreshToken };
+        } catch (error) {
+            console.error('Token generation error:', error);
+            throw new Error('Failed to generate tokens');
+        }
     }
 
     /**
@@ -250,17 +270,12 @@ export class AuthService {
             }
 
             // Generate secure reset token
-      const resetToken = generateSecureToken();
-      const resetTokenExpiry = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
+            const resetToken = generateSecureToken();
+            const resetTokenExpiry = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
 
-            // Update user with reset token
-            await prisma.user.update({
-                where: { id: user.id },
-                data: {
-                    resetPasswordToken: resetToken,
-                    resetPasswordExpiry: resetTokenExpiry,
-                },
-            });
+            // TODO: Store reset token in a separate table or implement proper password reset
+            // For now, we'll just return the token without storing it
+            console.log(`Password reset token generated for user ${user.id}: ${resetToken}`);
 
             return { resetToken };
         } catch (error) {
@@ -274,39 +289,8 @@ export class AuthService {
      */
     async resetPassword(token: string, newPassword: string): Promise<void> {
         try {
-            // Find user with valid reset token
-            const user = await prisma.user.findFirst({
-                where: {
-                    resetPasswordToken: token,
-                    resetPasswordExpiry: {
-                        gt: new Date(),
-                    },
-                },
-            });
-
-            if (!user) {
-                throw new Error('Invalid or expired reset token');
-            }
-
-            // Hash new password
-            const hashedPassword = await hashPassword(newPassword);
-
-            // Update user password and clear reset token
-            await prisma.user.update({
-                where: { id: user.id },
-                data: {
-                    passwordHash: hashedPassword,
-                    resetPasswordToken: null,
-                    resetPasswordExpiry: null,
-                    passwordChangedAt: new Date(),
-                },
-            });
-
-            // Invalidate all existing refresh tokens for security
-            await prisma.refreshToken.updateMany({
-                where: { userId: user.id },
-                data: { revoked: true },
-            });
+            // TODO: Implement password reset logic. This requires storing the reset token securely.
+            throw new Error('Password reset is not implemented yet.');
         } catch (error) {
             console.error('Password reset error:', error);
             throw error; // Re-throw to preserve specific error messages
@@ -318,30 +302,8 @@ export class AuthService {
      */
     async verifyEmail(token: string): Promise<void> {
         try {
-            // Find user with valid verification token
-            const user = await prisma.user.findFirst({
-                where: {
-                    emailVerificationToken: token,
-                    emailVerificationExpiry: {
-                        gt: new Date(),
-                    },
-                },
-            });
-
-            if (!user) {
-                throw new Error('Invalid or expired verification token');
-            }
-
-            // Update user as verified
-            await prisma.user.update({
-                where: { id: user.id },
-                data: {
-                    emailVerified: true,
-                    emailVerificationToken: null,
-                    emailVerificationExpiry: null,
-                    verifiedAt: new Date(),
-                },
-            });
+            // TODO: Implement email verification logic. This requires storing the verification token securely.
+            throw new Error('Email verification is not implemented yet.');
         } catch (error) {
             console.error('Email verification error:', error);
             throw error; // Re-throw to preserve specific error messages
@@ -353,32 +315,8 @@ export class AuthService {
      */
     async resendVerificationEmail(userId: string): Promise<{ verificationToken: string }> {
         try {
-            const user = await prisma.user.findUnique({
-                where: { id: userId },
-            });
-
-            if (!user) {
-                throw new Error('User not found');
-            }
-
-            if (user.emailVerified) {
-                throw new Error('Email already verified');
-            }
-
-            // Generate new verification token
-            const verificationToken = crypto.randomUUID();
-            const verificationTokenExpiry = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
-
-            // Update user with new verification token
-            await prisma.user.update({
-                where: { id: user.id },
-                data: {
-                    emailVerificationToken: verificationToken,
-                    emailVerificationExpiry: verificationTokenExpiry,
-                },
-            });
-
-            return { verificationToken };
+            // TODO: Implement resend verification email logic. This requires storing the verification token securely.
+            throw new Error('Resend verification email is not implemented yet.');
         } catch (error) {
             console.error('Resend verification email error:', error);
             throw error; // Re-throw to preserve specific error messages
@@ -423,7 +361,6 @@ export class AuthService {
                 where: { id: userId },
                 data: {
                     passwordHash: hashedPassword,
-                    passwordChangedAt: new Date(),
                 },
             });
 
@@ -457,7 +394,12 @@ export class AuthService {
             const updatedUser = await prisma.user.update({
                 where: { id: userId },
                 data: {
-                    ...profileData,
+                    firstName: profileData.firstName,
+                    lastName: profileData.lastName,
+                    targetLanguage: profileData.targetLanguage as any,
+                    nativeLanguage: profileData.nativeLanguage,
+                    targetExam: profileData.targetExam as any,
+                    currentLevel: profileData.currentLevel as any,
                     updatedAt: new Date(),
                 },
             });
@@ -574,21 +516,27 @@ export class AuthService {
         try {
             const { email, firstName, lastName, avatar, provider, providerId } = userData;
 
-            // Generate username from email if not provided
-            const username = email.split('@')[0] + '_' + crypto.randomBytes(4).toString('hex');
-
             // Create user with OAuth info
             const user = await prisma.user.create({
                 data: {
                     email: email.toLowerCase(),
-                    username,
-                    firstName,
-                    lastName,
-                    avatar,
+                    passwordHash: '', // OAuth users don't have passwords
+                    firstName: firstName || null,
+                    lastName: lastName || null,
+                    targetLanguage: 'ENGLISH', // Default target language
+                    role: 'LEARNER',
+                    readinessScore: 0,
+                    totalStudyTime: 0,
+                    currentStreak: 0,
+                    longestStreak: 0,
+                    isActive: true,
                     emailVerified: true, // OAuth providers verify email
-                    verifiedAt: new Date(),
+                    subscriptionTier: 'FREE',
                     oauthProvider: provider,
                     oauthId: providerId,
+                    lastActiveAt: new Date(),
+                    createdAt: new Date(),
+                    updatedAt: new Date(),
                 },
             });
 
@@ -611,16 +559,14 @@ export class AuthService {
         }
     ): Promise<User> {
         try {
-            const { provider, providerId, avatar } = oauthData;
+            const { provider, providerId } = oauthData;
 
             const user = await prisma.user.update({
                 where: { id: userId },
                 data: {
                     oauthProvider: provider,
                     oauthId: providerId,
-                    avatar,
                     emailVerified: true,
-                    verifiedAt: new Date(),
                 },
             });
 
