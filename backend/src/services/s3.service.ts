@@ -1,26 +1,19 @@
-import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
-import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
-import { randomUUID } from 'crypto';
-import { config } from '../config/config';
-import { AppError } from '../utils/errorHandler';
+import {
+  S3Client,
+  PutObjectCommand,
+  GetObjectCommand,
+  DeleteObjectCommand,
+  HeadObjectCommand,
+} from "@aws-sdk/client-s3";
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+import { randomUUID } from "crypto";
+import { config } from "../config/config";
+import { AppError } from "../utils/errors";
+import { Readable } from "stream";
 
-export interface PresignedUploadUrl {
+export interface PresignedUploadResult {
   uploadUrl: string;
   fileKey: string;
-  expiresAt: Date;
-}
-
-export interface PresignedDownloadUrl {
-  downloadUrl: string;
-  expiresAt: Date;
-}
-
-export interface FileUploadOptions {
-  fileName: string;
-  contentType: string;
-  fileSize?: number;
-  expiresIn?: number; // seconds
-  metadata?: Record<string, string>;
 }
 
 export class S3Service {
@@ -30,9 +23,9 @@ export class S3Service {
 
   constructor() {
     this.bucket = config.aws.s3Bucket;
-    
+
     const s3Config: any = {
-      region: config.aws.region || 'us-east-1',
+      region: config.aws.region || "us-east-1",
       credentials: {
         accessKeyId: config.aws.accessKeyId,
         secretAccessKey: config.aws.secretAccessKey,
@@ -51,58 +44,117 @@ export class S3Service {
   /**
    * Generate a presigned URL for file upload
    */
-  async generateUploadPresignedUrl(options: FileUploadOptions): Promise<PresignedUploadUrl> {
+  async generatePresignedUploadUrl(
+    fileName: string,
+    contentType: string,
+    expiresIn: number = this.defaultExpiresIn
+  ): Promise<PresignedUploadResult> {
     try {
-      const fileKey = this.generateFileKey(options.fileName);
-      const expiresIn = options.expiresIn || this.defaultExpiresIn;
-      
-      // Validate file size if provided
-      if (options.fileSize && options.fileSize > 500 * 1024 * 1024) { // 500MB limit
-        throw new AppError('File size exceeds maximum allowed size of 500MB', 400);
-      }
+      const fileKey = this.generateFileKey(fileName);
 
       const command = new PutObjectCommand({
         Bucket: this.bucket,
         Key: fileKey,
-        ContentType: options.contentType,
-        Metadata: {
-          originalName: options.fileName,
-          uploadTime: new Date().toISOString(),
-          ...options.metadata,
-        },
+        ContentType: contentType,
       });
 
-      const uploadUrl = await getSignedUrl(this.s3Client, command, { expiresIn });
-      
+      const uploadUrl = await getSignedUrl(this.s3Client, command, {
+        expiresIn,
+      });
+
       return {
         uploadUrl,
         fileKey,
-        expiresAt: new Date(Date.now() + expiresIn * 1000),
       };
-    } catch (error) {
-      if (error instanceof AppError) throw error;
-      throw new AppError(`Failed to generate upload URL: ${error.message}`, 500);
+    } catch (error: any) {
+      throw new AppError(
+        `Failed to generate upload URL: ${error.message}`,
+        500
+      );
     }
   }
 
   /**
    * Generate a presigned URL for file download
    */
-  async generateDownloadPresignedUrl(fileKey: string, expiresIn: number = this.defaultExpiresIn): Promise<PresignedDownloadUrl> {
+  async generatePresignedDownloadUrl(
+    fileKey: string,
+    fileName: string,
+    expiresIn: number = this.defaultExpiresIn
+  ): Promise<string> {
+    try {
+      const command = new GetObjectCommand({
+        Bucket: this.bucket,
+        Key: fileKey,
+        ResponseContentDisposition: `attachment; filename="${fileName}"`,
+      });
+
+      const downloadUrl = await getSignedUrl(this.s3Client, command, {
+        expiresIn,
+      });
+
+      return downloadUrl;
+    } catch (error: any) {
+      throw new AppError(
+        `Failed to generate download URL: ${error.message}`,
+        500
+      );
+    }
+  }
+
+  /**
+   * Upload a file to S3
+   */
+  async uploadFile(
+    fileBuffer: Buffer,
+    fileKey: string,
+    contentType: string,
+    metadata?: Record<string, string>
+  ): Promise<string> {
+    try {
+      const command = new PutObjectCommand({
+        Bucket: this.bucket,
+        Key: fileKey,
+        Body: fileBuffer,
+        ContentType: contentType,
+        Metadata: metadata,
+      });
+
+      await this.s3Client.send(command);
+
+      return this.getPublicUrl(fileKey);
+    } catch (error: any) {
+      throw new AppError(`Failed to upload file: ${error.message}`, 500);
+    }
+  }
+
+  /**
+   * Download a file from S3
+   */
+  async downloadFile(fileKey: string): Promise<Buffer> {
     try {
       const command = new GetObjectCommand({
         Bucket: this.bucket,
         Key: fileKey,
       });
 
-      const downloadUrl = await getSignedUrl(this.s3Client, command, { expiresIn });
-      
-      return {
-        downloadUrl,
-        expiresAt: new Date(Date.now() + expiresIn * 1000),
-      };
-    } catch (error) {
-      throw new AppError(`Failed to generate download URL: ${error.message}`, 500);
+      const response = await this.s3Client.send(command);
+
+      if (!response.Body) {
+        throw new Error("No file body in response");
+      }
+
+      // Convert stream to buffer
+      const stream = response.Body as Readable;
+      const chunks: Buffer[] = [];
+
+      for await (const chunk of stream) {
+        chunks.push(chunk);
+      }
+
+      return Buffer.concat(chunks);
+    } catch (error: any) {
+      throw new AppError(`Failed to download file: ${error.message}`, 500);
     }
   }
 
@@ -117,7 +169,7 @@ export class S3Service {
       });
 
       await this.s3Client.send(command);
-    } catch (error) {
+    } catch (error: any) {
       throw new AppError(`Failed to delete file: ${error.message}`, 500);
     }
   }
@@ -127,18 +179,21 @@ export class S3Service {
    */
   async fileExists(fileKey: string): Promise<boolean> {
     try {
-      const command = new GetObjectCommand({
+      const command = new HeadObjectCommand({
         Bucket: this.bucket,
         Key: fileKey,
       });
 
       await this.s3Client.send(command);
       return true;
-    } catch (error) {
-      if (error.name === 'NoSuchKey') {
+    } catch (error: any) {
+      if (error.name === "NoSuchKey" || error.name === "NotFound") {
         return false;
       }
-      throw new AppError(`Failed to check file existence: ${error.message}`, 500);
+      throw new AppError(
+        `Failed to check file existence: ${error.message}`,
+        500
+      );
     }
   }
 
@@ -147,8 +202,8 @@ export class S3Service {
    */
   private generateFileKey(originalName: string): string {
     const timestamp = Date.now();
-    const randomId = randomUUID().split('-')[0];
-    const sanitizedName = originalName.replace(/[^a-zA-Z0-9.-]/g, '_');
+    const randomId = randomUUID().split("-")[0];
+    const sanitizedName = originalName.replace(/[^a-zA-Z0-9.-]/g, "_");
     return `uploads/${timestamp}-${randomId}-${sanitizedName}`;
   }
 
@@ -160,7 +215,7 @@ export class S3Service {
       // For MinIO and other S3-compatible services
       return `${config.aws.s3Endpoint}/${this.bucket}/${fileKey}`;
     }
-    return `https://${this.bucket}.s3.${config.aws.region || 'us-east-1'}.amazonaws.com/${fileKey}`;
+    return `https://${this.bucket}.s3.${config.aws.region || "us-east-1"}.amazonaws.com/${fileKey}`;
   }
 }
 

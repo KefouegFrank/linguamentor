@@ -131,25 +131,3 @@ export interface PasswordResetConfirm {
 export interface EmailVerificationRequest {
   token: string;
 }
-
-/**
- * Token types for secure storage
- */
-export type TokenType = 'email_verification' | 'password_reset';
-
-/**
- * Token creation result
- */
-export interface TokenCreationResult {
-  token: string;
-  expiresAt: Date;
-}
-
-/**
- * Token validation result
- */
-export interface TokenValidationResult {
-  isValid: boolean;
-  userId?: string;
-  error?: string;
-}

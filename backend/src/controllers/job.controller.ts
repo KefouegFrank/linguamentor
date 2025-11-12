@@ -1,19 +1,16 @@
-import { Request, Response, NextFunction } from 'express';
-import { prisma } from '../prisma/prisma';
-import { queueService, QUEUE_NAMES } from '../services/queue.service';
-import { AppError } from '../utils/errorHandler';
-import { JobStatus, JobType, JobPriority } from '@prisma/client';
-import { config } from '../config/config';
+import { Request, Response, NextFunction } from "express";
+import { prisma } from "../prisma/client";
+import { QueueService, QUEUE_NAMES } from "../services/queue.service";
+import { AppError } from "../utils/errors";
+import { JobStatus, JobType, JobPriority, FileStatus } from "@prisma/client";
+import { config } from "../config/config";
+import { AccessTokenPayload } from "../types/auth.types";
 
 /**
  * Request types
  */
 interface AuthenticatedRequest extends Request {
-  user?: {
-    id: string;
-    email: string;
-    role: string;
-  };
+  user?: AccessTokenPayload;
 }
 
 interface CreateJobRequest extends AuthenticatedRequest {
@@ -29,11 +26,11 @@ interface CreateJobRequest extends AuthenticatedRequest {
 
 interface JobWebhookRequest extends Request {
   headers: {
-    'x-service-token'?: string;
+    "x-service-token"?: string;
   };
   body: {
     jobId: string;
-    status: 'completed' | 'failed';
+    status: "completed" | "failed";
     result?: any;
     error?: string;
     metadata?: Record<string, any>;
@@ -49,24 +46,31 @@ export const createJob = async (
   next: NextFunction
 ) => {
   try {
-    const { type, priority = JobPriority.MEDIUM, fileId, data, webhookUrl, delay } = req.body;
-    const userId = req.user!.id;
+    const {
+      type,
+      priority = JobPriority.NORMAL,
+      fileId,
+      data,
+      webhookUrl,
+      delay,
+    } = req.body;
+    const userId = req.user!.userId;
 
     // Validate file exists if fileId is provided
     if (fileId) {
       const file = await prisma.file.findFirst({
         where: {
           id: fileId,
-          uploadedById: userId,
+          userId,
         },
       });
 
       if (!file) {
-        throw new AppError('File not found', 404);
+        throw new AppError("File not found", 404);
       }
 
-      if (file.status !== 'UPLOADED') {
-        throw new AppError('File not ready for processing', 400);
+      if (file.status !== FileStatus.UPLOADED) {
+        throw new AppError("File not ready for processing", 400);
       }
     }
 
@@ -76,14 +80,11 @@ export const createJob = async (
       case JobType.AI_PROCESSING:
         queueName = QUEUE_NAMES.AI_PROCESSING;
         break;
-      case JobType.FILE_PROCESSING:
+      case JobType.FILE_CONVERSION:
         queueName = QUEUE_NAMES.FILE_PROCESSING;
         break;
-      case JobType.EMAIL_NOTIFICATION:
-        queueName = QUEUE_NAMES.EMAIL_NOTIFICATIONS;
-        break;
       default:
-        throw new AppError('Invalid job type', 400);
+        throw new AppError("Invalid job type", 400);
     }
 
     // Prepare job data
@@ -95,7 +96,7 @@ export const createJob = async (
     };
 
     // Add job to queue
-    const jobId = await queueService.addJob(
+    const jobId = await QueueService.addJob(
       queueName,
       type,
       jobData,
@@ -107,7 +108,7 @@ export const createJob = async (
       success: true,
       data: {
         jobId,
-        message: 'Job created successfully',
+        message: "Job created successfully",
       },
     });
   } catch (error) {
@@ -125,24 +126,24 @@ export const getJobStatus = async (
 ) => {
   try {
     const { jobId } = req.params;
-    const userId = req.user!.id;
+    const userId = req.user!.userId;
 
     // Verify user owns this job
     const job = await prisma.job.findFirst({
       where: {
         id: jobId,
-        data: {
-          path: ['userId'],
+        payload: {
+          path: ["userId"],
           equals: userId,
         },
       },
     });
 
     if (!job) {
-      throw new AppError('Job not found', 404);
+      throw new AppError("Job not found", 404);
     }
 
-    const jobStatus = await queueService.getJobStatus(jobId);
+    const jobStatus = await QueueService.getJobStatus(jobId);
 
     res.status(200).json({
       success: true,
@@ -164,26 +165,26 @@ export const listJobs = async (
   next: NextFunction
 ) => {
   try {
-    const userId = req.user!.id;
+    const userId = req.user!.userId;
     const {
       page = 1,
       limit = 10,
       type,
       status,
       queueName,
-      sortBy = 'createdAt',
-      sortOrder = 'desc',
+      sortBy = "createdAt",
+      sortOrder = "desc",
     } = req.query;
 
     const where: any = {
-      data: {
-        path: ['userId'],
+      payload: {
+        path: ["userId"],
         equals: userId,
       },
     };
 
     if (type) {
-      where.type = type;
+      where.jobType = type;
     }
 
     if (status) {
@@ -201,26 +202,26 @@ export const listJobs = async (
         where,
         skip,
         take: Number(limit),
-        orderBy: { [sortBy as string]: sortOrder as 'asc' | 'desc' },
+        orderBy: { [sortBy as string]: sortOrder as "asc" | "desc" },
         include: {
           file: {
             select: {
               id: true,
-              filename: true,
+              fileName: true,
               originalName: true,
-              contentType: true,
+              mimeType: true,
               size: true,
-              type: true,
+              fileType: true,
             },
           },
           outputFile: {
             select: {
               id: true,
-              filename: true,
+              fileName: true,
               originalName: true,
-              contentType: true,
+              mimeType: true,
               size: true,
-              type: true,
+              fileType: true,
             },
           },
         },
@@ -231,10 +232,10 @@ export const listJobs = async (
     res.status(200).json({
       success: true,
       data: {
-        jobs: jobs.map(job => ({
+        jobs: jobs.map((job) => ({
           ...job,
-          data: job.data ? JSON.parse(job.data) : null,
-          result: job.result ? JSON.parse(job.result) : null,
+          data: (job as any).payload ?? null,
+          result: (job as any).result ?? null,
         })),
         pagination: {
           page: Number(page),
@@ -259,32 +260,32 @@ export const cancelJob = async (
 ) => {
   try {
     const { jobId } = req.params;
-    const userId = req.user!.id;
+    const userId = req.user!.userId;
 
     // Verify user owns this job
     const job = await prisma.job.findFirst({
       where: {
         id: jobId,
-        data: {
-          path: ['userId'],
+        payload: {
+          path: ["userId"],
           equals: userId,
         },
       },
     });
 
     if (!job) {
-      throw new AppError('Job not found', 404);
+      throw new AppError("Job not found", 404);
     }
 
     if (job.status === JobStatus.COMPLETED || job.status === JobStatus.FAILED) {
-      throw new AppError('Cannot cancel completed or failed job', 400);
+      throw new AppError("Cannot cancel completed or failed job", 400);
     }
 
-    await queueService.cancelJob(jobId);
+    await QueueService.cancelJob(jobId);
 
     res.status(200).json({
       success: true,
-      message: 'Job cancelled successfully',
+      message: "Job cancelled successfully",
     });
   } catch (error) {
     next(error);
@@ -301,25 +302,25 @@ export const retryJob = async (
 ) => {
   try {
     const { jobId } = req.params;
-    const userId = req.user!.id;
+    const userId = req.user!.userId;
 
     // Verify user owns this job
     const job = await prisma.job.findFirst({
       where: {
         id: jobId,
-        data: {
-          path: ['userId'],
+        payload: {
+          path: ["userId"],
           equals: userId,
         },
       },
     });
 
     if (!job) {
-      throw new AppError('Job not found', 404);
+      throw new AppError("Job not found", 404);
     }
 
     if (job.status !== JobStatus.FAILED) {
-      throw new AppError('Only failed jobs can be retried', 400);
+      throw new AppError("Only failed jobs can be retried", 400);
     }
 
     // Reset job status and attempts
@@ -336,10 +337,10 @@ export const retryJob = async (
     });
 
     // Re-add to queue
-    const jobData = JSON.parse(job.data);
-    const newJobId = await queueService.addJob(
+    const jobData = (job as any).payload;
+    const newJobId = await QueueService.addJob(
       job.queueName,
-      job.type,
+      job.jobType,
       jobData,
       job.priority
     );
@@ -348,7 +349,7 @@ export const retryJob = async (
       success: true,
       data: {
         jobId: newJobId,
-        message: 'Job retried successfully',
+        message: "Job retried successfully",
       },
     });
   } catch (error) {
@@ -366,11 +367,30 @@ export const handleJobWebhook = async (
 ) => {
   try {
     const { jobId, status, result, error, metadata } = req.body;
-    const serviceToken = req.headers['x-service-token'];
+    const serviceToken = req.headers["x-service-token"];
+    const signature = (req.headers as any)["x-signature"] as string | undefined;
 
     // Validate service token
     if (serviceToken !== config.internalService.token) {
-      throw new AppError('Invalid service token', 401);
+      throw new AppError("Invalid service token", 401);
+    }
+
+    // Optional: Validate HMAC signature if configured
+    if (config.internalService.webhookSecret) {
+      try {
+        const crypto = await import("node:crypto");
+        const payloadString = JSON.stringify({ jobId, status, result, error, metadata });
+        const hmac = crypto.createHmac("sha256", config.internalService.webhookSecret);
+        hmac.update(payloadString);
+        const expected = hmac.digest("hex");
+        if (!signature || signature !== expected) {
+          throw new AppError("Invalid webhook signature", 401);
+        }
+      } catch (e) {
+        // If signature validation fails, block the request
+        if (e instanceof AppError) throw e;
+        throw new AppError("Webhook signature validation failed", 401);
+      }
     }
 
     const job = await prisma.job.findUnique({
@@ -378,13 +398,13 @@ export const handleJobWebhook = async (
     });
 
     if (!job) {
-      throw new AppError('Job not found', 404);
+      throw new AppError("Job not found", 404);
     }
 
-    if (status === 'completed') {
-      await queueService.completeJob(jobId, result);
-    } else if (status === 'failed') {
-      await queueService.failJob(jobId, error || 'Job failed');
+    if (status === "completed") {
+      await QueueService.completeJob(jobId, result);
+    } else if (status === "failed") {
+      await QueueService.failJob(jobId, error || "Job failed");
     }
 
     // Store metadata if provided
@@ -392,14 +412,14 @@ export const handleJobWebhook = async (
       await prisma.job.update({
         where: { id: jobId },
         data: {
-          metadata: JSON.stringify(metadata),
+          metadata: metadata as any,
         },
       });
     }
 
     res.status(200).json({
       success: true,
-      message: 'Webhook processed successfully',
+      message: "Webhook processed successfully",
     });
   } catch (error) {
     next(error);
@@ -417,7 +437,7 @@ export const getQueueMetrics = async (
   try {
     const { queueName } = req.query;
 
-    const metrics = await queueService.getQueueMetrics(queueName as string);
+    const metrics = await QueueService.getQueueMetrics(queueName as string);
 
     res.status(200).json({
       success: true,
@@ -442,11 +462,11 @@ export const cleanOldJobs = async (
     const { queueName, olderThanHours = 24 } = req.body;
 
     if (!queueName) {
-      throw new AppError('Queue name is required', 400);
+      throw new AppError("Queue name is required", 400);
     }
 
     const olderThanMs = olderThanHours * 60 * 60 * 1000;
-    const result = await queueService.cleanOldJobs(queueName, olderThanMs);
+    const result = await QueueService.cleanOldJobs(queueName, olderThanMs);
 
     res.status(200).json({
       success: true,

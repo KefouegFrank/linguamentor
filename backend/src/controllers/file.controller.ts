@@ -1,21 +1,18 @@
-import { Request, Response, NextFunction } from 'express';
-import { prisma } from '../prisma/prisma';
-import { s3Service } from '../services/s3.service';
-import { queueService, QUEUE_NAMES } from '../services/queue.service';
-import { AppError } from '../utils/errorHandler';
-import { config } from '../config/config';
-import { FileStatus, FileType, JobType, JobPriority } from '@prisma/client';
-import crypto from 'crypto';
+import { Request, Response, NextFunction } from "express";
+import { prisma } from "../prisma/client";
+import { s3Service } from "../services/s3.service";
+import { QueueService, QUEUE_NAMES } from "../services/queue.service";
+import { config } from "../config/config";
+import { FileStatus, FileType, JobType, JobPriority } from "@prisma/client";
+import { AccessTokenPayload } from "../types/auth.types";
+import crypto from "crypto";
+import { AppError } from "../utils/errors";
 
 /**
  * Request types
  */
 interface AuthenticatedRequest extends Request {
-  user?: {
-    id: string;
-    email: string;
-    role: string;
-  };
+  user?: AccessTokenPayload;
 }
 
 interface CreateFileUploadRequest extends AuthenticatedRequest {
@@ -33,7 +30,13 @@ interface ProcessFileRequest extends AuthenticatedRequest {
     fileId: string;
   };
   body: {
-    operation: 'transcribe' | 'translate' | 'summarize' | 'convert' | 'compress' | 'extract';
+    operation:
+      | "transcribe"
+      | "translate"
+      | "summarize"
+      | "convert"
+      | "compress"
+      | "extract";
     targetLanguage?: string;
     parameters?: Record<string, any>;
     priority?: JobPriority;
@@ -51,43 +54,39 @@ export const createPresignedUpload = async (
 ) => {
   try {
     const { filename, contentType, fileType, size, metadata = {} } = req.body;
-    const userId = req.user!.id;
+    const userId = req.user!.userId;
 
     // Validate file size
     if (size > config.upload.maxFileSize) {
-      throw new AppError('File size exceeds maximum allowed size', 400);
+      throw new AppError("File size exceeds maximum allowed size", 400);
     }
 
     // Validate content type
     if (!config.upload.allowedMimeTypes.includes(contentType)) {
-      throw new AppError('File type not allowed', 400);
+      throw new AppError("File type not allowed", 400);
     }
 
-    // Create file record
-    const file = await prisma.file.create({
-      data: {
-        filename,
-        originalName: filename,
-        contentType,
-        size,
-        type: fileType,
-        status: FileStatus.PENDING,
-        uploadedById: userId,
-        metadata: JSON.stringify(metadata),
-      },
-    });
-
-    // Generate presigned upload URL
+    // Generate presigned upload URL first to get S3 key
     const { uploadUrl, fileKey } = await s3Service.generatePresignedUploadUrl(
       filename,
       contentType,
       config.upload.presignedUrlExpiry
     );
 
-    // Update file with S3 key
-    await prisma.file.update({
-      where: { id: file.id },
-      data: { s3Key: fileKey },
+    // Create file record aligned with Prisma schema
+    const file = await prisma.file.create({
+      data: {
+        userId,
+        originalName: filename,
+        fileName: fileKey,
+        mimeType: contentType,
+        size: BigInt(size),
+        fileType,
+        status: FileStatus.PENDING,
+        s3Bucket: config.aws.s3Bucket,
+        s3Key: fileKey,
+        metadata: metadata as any,
+      },
     });
 
     res.status(201).json({
@@ -98,10 +97,10 @@ export const createPresignedUpload = async (
         expiresIn: config.upload.presignedUrlExpiry,
         file: {
           id: file.id,
-          filename: file.filename,
-          contentType: file.contentType,
-          size: file.size,
-          type: file.type,
+          fileName: file.fileName,
+          mimeType: file.mimeType,
+          size: Number(file.size),
+          fileType: file.fileType,
           status: file.status,
           createdAt: file.createdAt,
         },
@@ -122,27 +121,27 @@ export const confirmUpload = async (
 ) => {
   try {
     const { fileId } = req.params;
-    const userId = req.user!.id;
+    const userId = req.user!.userId;
 
     const file = await prisma.file.findFirst({
       where: {
         id: fileId,
-        uploadedById: userId,
+        userId,
       },
     });
 
     if (!file) {
-      throw new AppError('File not found', 404);
+      throw new AppError("File not found", 404);
     }
 
     if (!file.s3Key) {
-      throw new AppError('File S3 key not found', 400);
+      throw new AppError("File S3 key not found", 400);
     }
 
     // Verify file exists in S3
     const exists = await s3Service.fileExists(file.s3Key);
     if (!exists) {
-      throw new AppError('File not found in storage', 404);
+      throw new AppError("File not found in storage", 404);
     }
 
     // Update file status
@@ -150,7 +149,6 @@ export const confirmUpload = async (
       where: { id: fileId },
       data: {
         status: FileStatus.UPLOADED,
-        uploadedAt: new Date(),
       },
     });
 
@@ -175,27 +173,27 @@ export const getDownloadUrl = async (
 ) => {
   try {
     const { fileId } = req.params;
-    const userId = req.user!.id;
+    const userId = req.user!.userId;
 
     const file = await prisma.file.findFirst({
       where: {
         id: fileId,
-        uploadedById: userId,
+        userId,
       },
     });
 
     if (!file) {
-      throw new AppError('File not found', 404);
+      throw new AppError("File not found", 404);
     }
 
     if (!file.s3Key) {
-      throw new AppError('File not available for download', 400);
+      throw new AppError("File not available for download", 400);
     }
 
     // Generate presigned download URL
     const downloadUrl = await s3Service.generatePresignedDownloadUrl(
       file.s3Key,
-      file.filename,
+      file.originalName,
       config.upload.presignedUrlExpiry
     );
 
@@ -206,10 +204,10 @@ export const getDownloadUrl = async (
         expiresIn: config.upload.presignedUrlExpiry,
         file: {
           id: file.id,
-          filename: file.filename,
-          contentType: file.contentType,
-          size: file.size,
-          type: file.type,
+          fileName: file.fileName,
+          mimeType: file.mimeType,
+          size: Number(file.size),
+          fileType: file.fileType,
         },
       },
     });
@@ -228,22 +226,28 @@ export const processFile = async (
 ) => {
   try {
     const { fileId } = req.params;
-    const { operation, targetLanguage, parameters = {}, priority = JobPriority.MEDIUM, webhookUrl } = req.body;
-    const userId = req.user!.id;
+    const {
+      operation,
+      targetLanguage,
+      parameters = {},
+      priority = JobPriority.NORMAL,
+      webhookUrl,
+    } = req.body;
+    const userId = req.user!.userId;
 
     const file = await prisma.file.findFirst({
       where: {
         id: fileId,
-        uploadedById: userId,
+        userId,
       },
     });
 
     if (!file) {
-      throw new AppError('File not found', 404);
+      throw new AppError("File not found", 404);
     }
 
     if (file.status !== FileStatus.UPLOADED) {
-      throw new AppError('File not ready for processing', 400);
+      throw new AppError("File not ready for processing", 400);
     }
 
     // Determine job type and queue based on operation
@@ -251,20 +255,20 @@ export const processFile = async (
     let queueName: string;
 
     switch (operation) {
-      case 'transcribe':
-      case 'translate':
-      case 'summarize':
+      case "transcribe":
+      case "translate":
+      case "summarize":
         jobType = JobType.AI_PROCESSING;
         queueName = QUEUE_NAMES.AI_PROCESSING;
         break;
-      case 'convert':
-      case 'compress':
-      case 'extract':
-        jobType = JobType.FILE_PROCESSING;
+      case "convert":
+      case "compress":
+      case "extract":
+        jobType = JobType.FILE_CONVERSION;
         queueName = QUEUE_NAMES.FILE_PROCESSING;
         break;
       default:
-        throw new AppError('Invalid operation', 400);
+        throw new AppError("Invalid operation", 400);
     }
 
     // Create job data
@@ -278,7 +282,7 @@ export const processFile = async (
     };
 
     // Add job to queue
-    const jobId = await queueService.addJob(
+    const jobId = await QueueService.addJob(
       queueName,
       jobType,
       jobData,
@@ -289,7 +293,7 @@ export const processFile = async (
       success: true,
       data: {
         jobId,
-        message: 'File processing job queued successfully',
+        message: "File processing job queued successfully",
       },
     });
   } catch (error) {
@@ -306,21 +310,21 @@ export const listFiles = async (
   next: NextFunction
 ) => {
   try {
-    const userId = req.user!.id;
+    const userId = req.user!.userId;
     const {
       page = 1,
       limit = 10,
       type,
       status,
       search,
-      sortBy = 'createdAt',
-      sortOrder = 'desc',
+      sortBy = "createdAt",
+      sortOrder = "desc",
     } = req.query;
 
-    const where: any = { uploadedById: userId };
+    const where: any = { userId };
 
     if (type) {
-      where.type = type;
+      where.fileType = type;
     }
 
     if (status) {
@@ -329,8 +333,8 @@ export const listFiles = async (
 
     if (search) {
       where.OR = [
-        { filename: { contains: search as string, mode: 'insensitive' } },
-        { originalName: { contains: search as string, mode: 'insensitive' } },
+        { fileName: { contains: search as string, mode: "insensitive" } },
+        { originalName: { contains: search as string, mode: "insensitive" } },
       ];
     }
 
@@ -341,17 +345,16 @@ export const listFiles = async (
         where,
         skip,
         take: Number(limit),
-        orderBy: { [sortBy as string]: sortOrder as 'asc' | 'desc' },
+        orderBy: { [sortBy as string]: sortOrder as "asc" | "desc" },
         select: {
           id: true,
-          filename: true,
+          fileName: true,
           originalName: true,
-          contentType: true,
+          mimeType: true,
           size: true,
-          type: true,
+          fileType: true,
           status: true,
           createdAt: true,
-          uploadedAt: true,
           metadata: true,
         },
       }),
@@ -385,18 +388,18 @@ export const getFile = async (
 ) => {
   try {
     const { fileId } = req.params;
-    const userId = req.user!.id;
+    const userId = req.user!.userId;
 
     const file = await prisma.file.findFirst({
       where: {
         id: fileId,
-        uploadedById: userId,
+        userId: userId,
       },
       include: {
-        jobs: {
+        originalJobs: {
           select: {
             id: true,
-            type: true,
+            jobType: true,
             status: true,
             priority: true,
             createdAt: true,
@@ -404,13 +407,26 @@ export const getFile = async (
             completedAt: true,
             progress: true,
           },
-          orderBy: { createdAt: 'desc' },
+          orderBy: { createdAt: "desc" },
+        },
+        outputJobs: {
+          select: {
+            id: true,
+            jobType: true,
+            status: true,
+            priority: true,
+            createdAt: true,
+            startedAt: true,
+            completedAt: true,
+            progress: true,
+          },
+          orderBy: { createdAt: "desc" },
         },
       },
     });
 
     if (!file) {
-      throw new AppError('File not found', 404);
+      throw new AppError("File not found", 404);
     }
 
     res.status(200).json({
@@ -434,17 +450,17 @@ export const deleteFile = async (
 ) => {
   try {
     const { fileId } = req.params;
-    const userId = req.user!.id;
+    const userId = req.user!.userId;
 
     const file = await prisma.file.findFirst({
       where: {
         id: fileId,
-        uploadedById: userId,
+        userId,
       },
     });
 
     if (!file) {
-      throw new AppError('File not found', 404);
+      throw new AppError("File not found", 404);
     }
 
     // Delete from S3 if it exists
@@ -452,7 +468,7 @@ export const deleteFile = async (
       try {
         await s3Service.deleteFile(file.s3Key);
       } catch (error) {
-        console.error('Failed to delete file from S3:', error);
+        console.error("Failed to delete file from S3:", error);
         // Continue with database deletion even if S3 deletion fails
       }
     }
@@ -464,7 +480,7 @@ export const deleteFile = async (
 
     res.status(200).json({
       success: true,
-      message: 'File deleted successfully',
+      message: "File deleted successfully",
     });
   } catch (error) {
     next(error);

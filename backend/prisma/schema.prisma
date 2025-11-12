@@ -720,7 +720,8 @@ model File {
   
   // Relations
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-  jobs Job[]
+  originalJobs Job[] @relation("JobOriginalFile")
+  outputJobs   Job[] @relation("JobOutputFile")
   
   @@index([userId])
   @@index([status])
@@ -773,9 +774,11 @@ model Job {
   // Job data
   payload Json @db.JsonB // Job-specific data
   result  Json? @db.JsonB // Job results
+  metadata Json? @db.JsonB // optional metadata
   
   // Processing details
   queueName    String @map("queue_name")
+  queueJobId   String? @map("queue_job_id")
   workerId     String? @map("worker_id") // Which worker processed this job
   attempts     Int @default(0)
   maxAttempts  Int @default(3) @map("max_attempts")
@@ -785,9 +788,11 @@ model Job {
   completedAt DateTime? @map("completed_at")
   failedAt    DateTime? @map("failed_at")
   timeoutAt   DateTime? @map("timeout_at")
+  cancelledAt DateTime? @map("cancelled_at")
   
   // Error handling
   errorMessage String? @map("error_message") @db.Text
+  error        String? @db.Text
   errorStack   String? @map("error_stack") @db.Text
   
   // Callbacks and webhooks
@@ -797,6 +802,8 @@ model Job {
   // Progress tracking
   progress Int @default(0) // 0-100
   progressMessage String? @map("progress_message")
+  outputFileId String? @map("output_file_id")
+  outputFile   File?   @relation("JobOutputFile", fields: [outputFileId], references: [id], onDelete: SetNull)
   
   // TTL for cleanup
   expiresAt DateTime? @map("expires_at")
@@ -807,7 +814,7 @@ model Job {
   
   // Relations
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-  file File? @relation(fields: [fileId], references: [id], onDelete: SetNull)
+  file File? @relation("JobOriginalFile", fields: [fileId], references: [id], onDelete: SetNull)
   
   @@index([userId])
   @@index([fileId])

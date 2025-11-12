@@ -1,7 +1,8 @@
-import { Queue, QueueEvents, Job } from 'bullmq';
-import { redisConnection } from './queue.service';
-import { prisma } from '../config/prisma';
-import { JobStatus, JobType } from '@prisma/client';
+import { Queue, QueueEvents } from "bullmq";
+import IORedis from "ioredis";
+import { prisma } from "../prisma/client";
+import { JobStatus, JobType } from "@prisma/client";
+import { config } from "../config/config";
 
 export interface QueueMetrics {
   queueName: string;
@@ -46,8 +47,13 @@ export class MonitoringService {
   private queues: Map<string, Queue> = new Map();
   private queueEvents: Map<string, QueueEvents> = new Map();
   private metricsInterval?: NodeJS.Timeout;
+  private connection: IORedis;
 
   constructor() {
+    this.connection = new IORedis(config.redis.url, {
+      maxRetriesPerRequest: null,
+      enableReadyCheck: false,
+    });
     this.initializeMonitoring();
   }
 
@@ -55,12 +61,18 @@ export class MonitoringService {
    * Initialize monitoring for all queues
    */
   private async initializeMonitoring() {
-    const queueNames = ['ai-processing', 'file-processing', 'email-notifications'];
-    
+    const queueNames = [
+      "ai-processing",
+      "file-processing",
+      "email-notifications",
+    ];
+
     for (const queueName of queueNames) {
-      const queue = new Queue(queueName, { connection: redisConnection });
-      const queueEvents = new QueueEvents(queueName, { connection: redisConnection });
-      
+      const queue = new Queue(queueName, { connection: this.connection });
+      const queueEvents = new QueueEvents(queueName, {
+        connection: this.connection,
+      });
+
       this.queues.set(queueName, queue);
       this.queueEvents.set(queueName, queueEvents);
 
@@ -72,16 +84,19 @@ export class MonitoringService {
   /**
    * Set up event listeners for queue events
    */
-  private setupQueueEventListeners(queueName: string, queueEvents: QueueEvents) {
-    queueEvents.on('completed', async ({ jobId, returnvalue }) => {
-      await this.logJobEvent(queueName, 'completed', jobId);
+  private setupQueueEventListeners(
+    queueName: string,
+    queueEvents: QueueEvents
+  ) {
+    queueEvents.on("completed", async ({ jobId, returnvalue }) => {
+      await this.logJobEvent(queueName, "completed", jobId);
     });
 
-    queueEvents.on('failed', async ({ jobId, failedReason }) => {
-      await this.logJobEvent(queueName, 'failed', jobId, failedReason);
+    queueEvents.on("failed", async ({ jobId, failedReason }) => {
+      await this.logJobEvent(queueName, "failed", jobId, failedReason);
     });
 
-    queueEvents.on('progress', async ({ jobId, data }) => {
+    queueEvents.on("progress", async ({ jobId, data }) => {
       await this.updateJobProgress(jobId, data);
     });
   }
@@ -91,17 +106,18 @@ export class MonitoringService {
    */
   async getAllQueueMetrics(): Promise<QueueMetrics[]> {
     const metrics: QueueMetrics[] = [];
-    
+
     for (const [queueName, queue] of this.queues) {
       try {
-        const [waiting, active, completed, failed, delayed, paused] = await Promise.all([
-          queue.getWaitingCount(),
-          queue.getActiveCount(),
-          queue.getCompletedCount(),
-          queue.getFailedCount(),
-          queue.getDelayedCount(),
-          queue.isPaused(),
-        ]);
+        const [waiting, active, completed, failed, delayed, paused] =
+          await Promise.all([
+            queue.getWaitingCount(),
+            queue.getActiveCount(),
+            queue.getCompletedCount(),
+            queue.getFailedCount(),
+            queue.getDelayedCount(),
+            queue.isPaused(),
+          ]);
 
         metrics.push({
           queueName,
@@ -125,92 +141,85 @@ export class MonitoringService {
         });
       }
     }
-    
+
     return metrics;
   }
 
   /**
    * Get job metrics from database
    */
-  async getJobMetrics(timeRange: '1h' | '24h' | '7d' | '30d' = '24h'): Promise<JobMetrics> {
+  async getJobMetrics(
+    timeRange: "1h" | "24h" | "7d" | "30d" = "24h"
+  ): Promise<JobMetrics> {
     const timeFilter = this.getTimeFilter(timeRange);
-    
+
     const [
       totalJobs,
       completedJobs,
       failedJobs,
-      avgProcessingTime,
       jobsByType,
       jobsByStatus,
+      completedWithResults,
     ] = await Promise.all([
-      // Total jobs
       prisma.job.count({ where: { createdAt: timeFilter } }),
-      
-      // Completed jobs
-      prisma.job.count({ 
-        where: { 
-          createdAt: timeFilter,
-          status: JobStatus.COMPLETED 
-        } 
+      prisma.job.count({
+        where: { createdAt: timeFilter, status: JobStatus.COMPLETED },
       }),
-      
-      // Failed jobs
-      prisma.job.count({ 
-        where: { 
-          createdAt: timeFilter,
-          status: JobStatus.FAILED 
-        } 
+      prisma.job.count({
+        where: { createdAt: timeFilter, status: JobStatus.FAILED },
       }),
-      
-      // Average processing time
-      prisma.job.aggregate({
-        where: {
-          createdAt: timeFilter,
-          processingTime: { not: null },
-        },
-        _avg: {
-          processingTime: true,
-        },
-      }),
-      
-      // Jobs by type
       prisma.job.groupBy({
-        by: ['jobType'],
+        by: ["jobType"],
         where: { createdAt: timeFilter },
-        _count: {
-          jobType: true,
-        },
+        _count: { jobType: true },
       }),
-      
-      // Jobs by status
       prisma.job.groupBy({
-        by: ['status'],
+        by: ["status"],
         where: { createdAt: timeFilter },
-        _count: {
-          status: true,
-        },
+        _count: { status: true },
+      }),
+      prisma.job.findMany({
+        where: { createdAt: timeFilter, status: JobStatus.COMPLETED },
+        select: { result: true },
       }),
     ]);
 
     const successRate = totalJobs > 0 ? (completedJobs / totalJobs) * 100 : 0;
     const failureRate = totalJobs > 0 ? (failedJobs / totalJobs) * 100 : 0;
-    
+
     // Convert groupBy results to records
-    const jobsByTypeRecord = jobsByType.reduce((acc, item) => {
-      acc[item.jobType] = item._count.jobType;
-      return acc;
-    }, {} as Record<JobType, number>);
-    
-    const jobsByStatusRecord = jobsByStatus.reduce((acc, item) => {
-      acc[item.status] = item._count.status;
-      return acc;
-    }, {} as Record<JobStatus, number>);
+    const jobsByTypeRecord = jobsByType.reduce(
+      (acc, item) => {
+        acc[item.jobType] = item._count.jobType;
+        return acc;
+      },
+      {} as Record<JobType, number>
+    );
+
+    const jobsByStatusRecord = jobsByStatus.reduce(
+      (acc, item) => {
+        acc[item.status] = item._count.status;
+        return acc;
+      },
+      {} as Record<JobStatus, number>
+    );
+
+    const processingTimes = completedWithResults
+      .map((j) => (j as any).result?.processingTime)
+      .filter((t) => typeof t === "number") as number[];
+
+    const averageProcessingTime =
+      processingTimes.length > 0
+        ? Math.round(
+            processingTimes.reduce((a, b) => a + b, 0) / processingTimes.length
+          )
+        : 0;
 
     return {
       totalJobs,
       completedJobs,
       failedJobs,
-      averageProcessingTime: avgProcessingTime._avg.processingTime || 0,
+      averageProcessingTime,
       successRate,
       failureRate,
       jobsByType: jobsByTypeRecord,
@@ -241,9 +250,9 @@ export class MonitoringService {
   private async checkRedisHealth() {
     try {
       const startTime = Date.now();
-      await redisConnection.ping();
+      await this.connection.ping();
       const responseTime = Date.now() - startTime;
-      
+
       return {
         connected: true,
         status: `Connected (${responseTime}ms)`,
@@ -253,7 +262,7 @@ export class MonitoringService {
     } catch (error) {
       return {
         connected: false,
-        status: 'Connection failed',
+        status: "Connection failed",
         memoryUsage: undefined,
         uptime: undefined,
       };
@@ -268,7 +277,7 @@ export class MonitoringService {
       const startTime = Date.now();
       await prisma.$queryRaw`SELECT 1`;
       const queryTime = Date.now() - startTime;
-      
+
       return {
         connected: true,
         queryTime,
@@ -287,11 +296,12 @@ export class MonitoringService {
   private async checkQueueHealth() {
     try {
       const metrics = await this.getAllQueueMetrics();
-      const healthyQueues = metrics.filter(metric => 
-        metric.failed < 10 && // Less than 10 failed jobs
-        metric.waiting < 100 // Less than 100 waiting jobs
+      const healthyQueues = metrics.filter(
+        (metric) =>
+          metric.failed < 10 && // Less than 10 failed jobs
+          metric.waiting < 100 // Less than 100 waiting jobs
       ).length;
-      
+
       return {
         healthy: healthyQueues === metrics.length,
         totalQueues: metrics.length,
@@ -311,7 +321,7 @@ export class MonitoringService {
    */
   private async getRedisMemoryUsage(): Promise<number | undefined> {
     try {
-      const info = await redisConnection.info('memory');
+      const info = await this.connection.info("memory");
       const usedMemoryMatch = info.match(/used_memory:(\d+)/);
       return usedMemoryMatch ? parseInt(usedMemoryMatch[1]) : undefined;
     } catch {
@@ -324,7 +334,7 @@ export class MonitoringService {
    */
   private async getRedisUptime(): Promise<number | undefined> {
     try {
-      const info = await redisConnection.info('server');
+      const info = await this.connection.info("server");
       const uptimeMatch = info.match(/uptime_in_seconds:(\d+)/);
       return uptimeMatch ? parseInt(uptimeMatch[1]) : undefined;
     } catch {
@@ -335,25 +345,25 @@ export class MonitoringService {
   /**
    * Get time filter for database queries
    */
-  private getTimeFilter(timeRange: string): { gte: Date } {
+  public getTimeFilter(timeRange: string): { gte: Date } {
     const now = new Date();
     let hours = 24; // default 24h
-    
+
     switch (timeRange) {
-      case '1h':
+      case "1h":
         hours = 1;
         break;
-      case '24h':
+      case "24h":
         hours = 24;
         break;
-      case '7d':
+      case "7d":
         hours = 24 * 7;
         break;
-      case '30d':
+      case "30d":
         hours = 24 * 30;
         break;
     }
-    
+
     return {
       gte: new Date(now.getTime() - hours * 60 * 60 * 1000),
     };
@@ -362,13 +372,18 @@ export class MonitoringService {
   /**
    * Log job events to database
    */
-  private async logJobEvent(queueName: string, event: string, jobId: string, error?: string) {
+  private async logJobEvent(
+    queueName: string,
+    event: string,
+    jobId: string,
+    error?: string
+  ) {
     try {
       await prisma.adminLog.create({
         data: {
-          logLevel: event === 'failed' ? 'ERROR' : 'INFO',
+          logLevel: event === "failed" ? "ERROR" : "INFO",
           message: `Job ${jobId} ${event} in queue ${queueName}`,
-          category: 'job_queue',
+          category: "job_queue",
           metadata: {
             queueName,
             event,
@@ -378,7 +393,7 @@ export class MonitoringService {
         },
       });
     } catch (error) {
-      console.error('Failed to log job event:', error);
+      console.error("Failed to log job event:", error);
     }
   }
 
@@ -390,33 +405,46 @@ export class MonitoringService {
       await prisma.job.update({
         where: { id: jobId },
         data: {
-          progress: typeof progress === 'number' ? progress : progress.progress || 0,
-          progressMessage: typeof progress === 'object' ? progress.message : undefined,
+          progress:
+            typeof progress === "number" ? progress : progress.progress || 0,
+          progressMessage:
+            typeof progress === "object" ? progress.message : undefined,
         },
       });
     } catch (error) {
-      console.error('Failed to update job progress:', error);
+      console.error("Failed to update job progress:", error);
     }
   }
 
   /**
    * Start collecting metrics periodically
    */
-  startMetricsCollection(intervalMs: number = 60000) { // 1 minute default
+  startMetricsCollection(intervalMs: number = 60000) {
+    // 1 minute default
     this.stopMetricsCollection();
-    
+
     this.metricsInterval = setInterval(async () => {
       try {
         const metrics = await this.getAllQueueMetrics();
-        const jobMetrics = await this.getJobMetrics('1h');
-        
+        const jobMetrics = await this.getJobMetrics("1h");
+
         // Store metrics in Redis for quick access
-        await redisConnection.setex('queue:metrics', 300, JSON.stringify(metrics)); // 5 minute TTL
-        await redisConnection.setex('job:metrics:1h', 300, JSON.stringify(jobMetrics)); // 5 minute TTL
-        
-        console.log(`[Monitoring] Collected metrics for ${metrics.length} queues`);
+        await this.connection.setex(
+          "queue:metrics",
+          300,
+          JSON.stringify(metrics)
+        ); // 5 minute TTL
+        await this.connection.setex(
+          "job:metrics:1h",
+          300,
+          JSON.stringify(jobMetrics)
+        ); // 5 minute TTL
+
+        console.log(
+          `[Monitoring] Collected metrics for ${metrics.length} queues`
+        );
       } catch (error) {
-        console.error('[Monitoring] Error collecting metrics:', error);
+        console.error("[Monitoring] Error collecting metrics:", error);
       }
     }, intervalMs);
   }
@@ -434,20 +462,23 @@ export class MonitoringService {
   /**
    * Get cached metrics from Redis
    */
-  async getCachedMetrics(): Promise<{ queues: QueueMetrics[]; jobs: JobMetrics } | null> {
+  async getCachedMetrics(): Promise<{
+    queues: QueueMetrics[];
+    jobs: JobMetrics;
+  } | null> {
     try {
       const [queueMetrics, jobMetrics] = await Promise.all([
-        redisConnection.get('queue:metrics'),
-        redisConnection.get('job:metrics:1h'),
+        this.connection.get("queue:metrics"),
+        this.connection.get("job:metrics:1h"),
       ]);
-      
+
       if (queueMetrics && jobMetrics) {
         return {
           queues: JSON.parse(queueMetrics),
           jobs: JSON.parse(jobMetrics),
         };
       }
-      
+
       return null;
     } catch {
       return null;
@@ -459,17 +490,17 @@ export class MonitoringService {
    */
   async cleanup() {
     this.stopMetricsCollection();
-    
+
     // Close all queue events
     for (const [_, queueEvents] of this.queueEvents) {
       await queueEvents.close();
     }
-    
+
     // Close all queues
     for (const [_, queue] of this.queues) {
       await queue.close();
     }
-    
+
     this.queues.clear();
     this.queueEvents.clear();
   }

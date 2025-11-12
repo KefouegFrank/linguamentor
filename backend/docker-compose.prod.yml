@@ -26,23 +26,6 @@ services:
     # ports:
     #   - "5432:5432"
 
-  redis:
-    image: redis:7-alpine
-    container_name: linguamentor_redis_prod
-    restart: always
-    volumes:
-      - redis_data_prod:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-    networks:
-      - linguamentor_prod
-    # Security: Redis should not be exposed externally in production
-    # ports:
-    #   - "6379:6379"
-
   backend:
     build:
       context: .
@@ -59,8 +42,6 @@ services:
     depends_on:
       db:
         condition: service_healthy
-      redis:
-        condition: service_healthy
     networks:
       - linguamentor_prod
     # Health check
@@ -73,7 +54,6 @@ services:
 
 volumes:
   db_data_prod:
-  redis_data_prod:
 
 networks:
   linguamentor_prod:

@@ -4,7 +4,7 @@
  * Production-ready with error handling, logging, and retry logic
  */
 
-import nodemailer from "nodemailer";
+import nodemailer, { Transporter } from "nodemailer";
 import { securityConfig } from "../config/auth.config";
 
 /**
@@ -35,7 +35,7 @@ interface EmailConfig {
  * Handles all email operations with proper error handling and logging
  */
 export class EmailService {
-  private transporter: nodemailer.Transporter | null = null;
+  private transporter: Transporter | null = null;
   private readonly config: EmailConfig;
 
   constructor() {
@@ -50,6 +50,7 @@ export class EmailService {
       from: process.env.EMAIL_FROM || "noreply@lingumentor.com",
     };
 
+    // Initialize transporter at construction with type-safe imports
     this.initializeTransporter();
   }
 

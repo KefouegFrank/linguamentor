@@ -5,6 +5,7 @@ import { createApp } from './app';
 import { prisma } from './prisma/client';
 import { config } from './config/config';
 import { createQueueService } from './services/queue.service';
+import { initializeWorkers, shutdownWorkers } from './workers/queue.worker';
 
 // Create the queue service
 const queueService = createQueueService(config.redis.url);
@@ -17,6 +18,9 @@ const server = app.listen(config.PORT, async () => {
     try {
         await prisma.$connect();
         console.log('Connected to DB');
+        // Initialize queue workers after DB connection
+        initializeWorkers();
+        console.log('Workers initialized');
     } catch (err) {
         console.error('DB connection failed', err);
         process.exit(1);
@@ -28,7 +32,7 @@ console.log('Server started.');
 process.on('SIGINT', async () => {
     console.log('SIGINT received. Shutting down.');
     await prisma.$disconnect();
-    await queueService.close();
+    await shutdownWorkers();
     server.close(() => process.exit(0));
 });
 

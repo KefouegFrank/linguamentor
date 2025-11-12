@@ -1,28 +1,28 @@
-import { Queue, Worker, Job as BullJob } from 'bullmq';
-import IORedis from 'ioredis';
-import { prisma } from '@prisma/client';
-import { AppError } from '../utils/errors';
-import { JobStatus, JobType, JobPriority } from '@prisma/client';
+import { Queue, Worker, Job as BullJob, JobProgress } from "bullmq";
+import IORedis from "ioredis";
+import { prisma } from "../prisma/client";
+import { AppError } from "../utils/errors";
+import { JobStatus, JobType, JobPriority } from "@prisma/client";
 
 // Queue names
 export const QUEUE_NAMES = {
-  AI_PROCESSING: 'ai-processing',
-  FILE_PROCESSING: 'file-processing',
-  EMAIL_NOTIFICATIONS: 'email-notifications',
+  AI_PROCESSING: "ai-processing",
+  FILE_PROCESSING: "file-processing",
+  EMAIL_NOTIFICATIONS: "email-notifications",
 } as const;
 
 // Job data types
 export interface AIProcessingJobData {
   fileId: string;
   userId: string;
-  operation: 'transcribe' | 'translate' | 'summarize';
+  operation: "transcribe" | "translate" | "summarize";
   targetLanguage?: string;
   webhookUrl?: string;
 }
 
 export interface FileProcessingJobData {
   fileId: string;
-  operation: 'convert' | 'compress' | 'extract';
+  operation: "convert" | "compress" | "extract";
   parameters?: Record<string, any>;
 }
 
@@ -59,7 +59,6 @@ export class QueueService {
   constructor(redisUrl: string) {
     this.connection = new IORedis(redisUrl, {
       maxRetriesPerRequest: null,
-      retryDelayOnFailure: 1000,
       enableReadyCheck: false,
     });
     this.initializeQueues();
@@ -67,15 +66,15 @@ export class QueueService {
 
   private initializeQueues() {
     // Initialize all queues
-    Object.values(QUEUE_NAMES).forEach(queueName => {
+    Object.values(QUEUE_NAMES).forEach((queueName) => {
       const queue = new Queue(queueName, {
         connection: this.connection,
         defaultJobOptions: {
-          removeOnComplete: { count: 1000 },
-          removeOnFail: { count: 5000 },
+          removeOnComplete: 1000,
+          removeOnFail: 5000,
           attempts: 3,
           backoff: {
-            type: 'exponential',
+            type: "exponential",
             delay: 2000,
           },
         },
@@ -92,7 +91,7 @@ export class QueueService {
     queueName: string,
     jobType: JobType,
     data: T,
-    priority: JobPriority = JobPriority.MEDIUM,
+    priority: JobPriority = JobPriority.NORMAL,
     delay?: number
   ): Promise<string> {
     const queue = this.queues.get(queueName);
@@ -103,26 +102,34 @@ export class QueueService {
     // Create job record in database
     const jobRecord = await prisma.job.create({
       data: {
-        type: jobType,
+        jobType,
         status: JobStatus.PENDING,
         priority,
-        data: JSON.stringify(data),
+        payload: data as any,
         queueName,
         attempts: 0,
         maxAttempts: 3,
+        user: { connect: { id: (data as any).userId } },
+        file: (data as any).fileId
+          ? { connect: { id: (data as any).fileId as string } }
+          : undefined,
       },
     });
 
     // Add job to queue
-    const job = await queue.add(jobType, {
-      jobId: jobRecord.id,
-      data,
-      attempts: 0,
-    }, {
-      priority: this.mapPriorityToNumber(priority),
-      delay,
-      jobId: jobRecord.id,
-    });
+    const job = await queue.add(
+      jobType,
+      {
+        jobId: jobRecord.id,
+        data,
+        attempts: 0,
+      },
+      {
+        priority: this.mapPriorityToNumber(priority),
+        delay,
+        jobId: jobRecord.id,
+      }
+    );
 
     // Update job with queue job ID
     await prisma.job.update({
@@ -146,7 +153,7 @@ export class QueueService {
     });
 
     if (!job) {
-      throw new AppError('Job not found', 404);
+      throw new AppError("Job not found", 404);
     }
 
     // Get queue job status if it exists
@@ -173,17 +180,18 @@ export class QueueService {
 
     return {
       id: job.id,
-      type: job.type,
+      type: job.jobType,
       status: job.status,
       priority: job.priority,
-      data: job.data ? JSON.parse(job.data) : null,
-      result: job.result ? JSON.parse(job.result) : null,
-      error: job.error,
+      data: job.payload,
+      result: job.result,
+      error: job.error ?? job.errorMessage,
       attempts: job.attempts,
       maxAttempts: job.maxAttempts,
       startedAt: job.startedAt,
       completedAt: job.completedAt,
       failedAt: job.failedAt,
+      cancelledAt: job.cancelledAt,
       createdAt: job.createdAt,
       updatedAt: job.updatedAt,
       file: job.file,
@@ -200,7 +208,6 @@ export class QueueService {
       where: { id: jobId },
       data: {
         progress,
-        data: data ? JSON.stringify(data) : undefined,
       },
     });
 
@@ -229,14 +236,18 @@ export class QueueService {
    * Complete job
    */
   async completeJob(jobId: string, result: any) {
+    const updateData: any = {
+      status: JobStatus.COMPLETED,
+      result: result as any,
+      completedAt: new Date(),
+      progress: 100,
+    };
+    if (result && typeof result === "object" && (result as any).outputFileId) {
+      updateData.outputFileId = (result as any).outputFileId as string;
+    }
     await prisma.job.update({
       where: { id: jobId },
-      data: {
-        status: JobStatus.COMPLETED,
-        result: JSON.stringify(result),
-        completedAt: new Date(),
-        progress: 100,
-      },
+      data: updateData,
     });
   }
 
@@ -267,11 +278,11 @@ export class QueueService {
     });
 
     if (!job) {
-      throw new AppError('Job not found', 404);
+      throw new AppError("Job not found", 404);
     }
 
     if (job.status === JobStatus.COMPLETED || job.status === JobStatus.FAILED) {
-      throw new AppError('Cannot cancel completed or failed job', 400);
+      throw new AppError("Cannot cancel completed or failed job", 400);
     }
 
     // Remove from queue if it's pending
@@ -331,13 +342,15 @@ export class QueueService {
     const metrics = await Promise.all(
       Object.values(QUEUE_NAMES).map(async (name) => {
         const queue = this.queues.get(name)!;
-        const [waiting, active, completed, failed, delayed] = await Promise.all([
-          queue.getWaitingCount(),
-          queue.getActiveCount(),
-          queue.getCompletedCount(),
-          queue.getFailedCount(),
-          queue.getDelayedCount(),
-        ]);
+        const [waiting, active, completed, failed, delayed] = await Promise.all(
+          [
+            queue.getWaitingCount(),
+            queue.getActiveCount(),
+            queue.getCompletedCount(),
+            queue.getFailedCount(),
+            queue.getDelayedCount(),
+          ]
+        );
 
         return {
           queueName: name,
@@ -356,14 +369,17 @@ export class QueueService {
   /**
    * Clean old jobs
    */
-  async cleanOldJobs(queueName: string, olderThanMs: number = 24 * 60 * 60 * 1000) {
+  async cleanOldJobs(
+    queueName: string,
+    olderThanMs: number = 24 * 60 * 60 * 1000
+  ) {
     const queue = this.queues.get(queueName);
     if (!queue) {
       throw new AppError(`Queue ${queueName} not found`, 404);
     }
 
-    const cleaned = await queue.clean(olderThanMs, 1000, 'completed');
-    const cleanedFailed = await queue.clean(olderThanMs, 1000, 'failed');
+    const cleaned = await queue.clean(olderThanMs, 1000, "completed");
+    const cleanedFailed = await queue.clean(olderThanMs, 1000, "failed");
 
     return {
       completed: cleaned.length,
@@ -379,7 +395,7 @@ export class QueueService {
     switch (priority) {
       case JobPriority.LOW:
         return 10;
-      case JobPriority.MEDIUM:
+      case JobPriority.NORMAL:
         return 5;
       case JobPriority.HIGH:
         return 1;
@@ -397,35 +413,43 @@ export class QueueService {
     const worker = new Worker(queueName, processor, {
       connection: this.connection,
       concurrency: 10,
-      removeOnComplete: { count: 1000 },
-      removeOnFail: { count: 5000 },
     });
 
     // Handle worker events
-    worker.on('completed', async (job, result) => {
-      console.log(`Job ${job.id} completed`);
-      const jobData = job.data;
-      if (jobData.jobId) {
-        await this.completeJob(jobData.jobId, result);
-      }
-    });
-
-    worker.on('failed', async (job, error) => {
-      console.error(`Job ${job.id} failed:`, error);
-      const jobData = job.data;
-      if (jobData.jobId) {
-        const maxAttemptsReached = await this.failJob(jobData.jobId, error.message);
-        if (maxAttemptsReached) {
-          console.log(`Job ${jobData.jobId} reached max attempts`);
+    worker.on("completed", (job, result, _prev) => {
+      void (async () => {
+        console.log(`Job ${job?.id} completed`);
+        const jobData = job?.data;
+        if (jobData?.jobId) {
+          await this.completeJob(jobData.jobId, result);
         }
-      }
+      })();
     });
 
-    worker.on('progress', async (job, progress) => {
-      const jobData = job.data;
-      if (jobData.jobId) {
-        await this.updateJobProgress(jobData.jobId, progress);
-      }
+    worker.on("failed", (job, error, _prev) => {
+      void (async () => {
+        console.error(`Job ${job?.id} failed:`, error);
+        const jobData = job?.data;
+        if (jobData?.jobId) {
+          const maxAttemptsReached = await this.failJob(
+            jobData.jobId,
+            error.message
+          );
+          if (maxAttemptsReached) {
+            console.log(`Job ${jobData.jobId} reached max attempts`);
+          }
+        }
+      })();
+    });
+
+    worker.on("progress", (job: BullJob, progress: JobProgress) => {
+      void (async () => {
+        const jobData = job.data;
+        if (jobData?.jobId) {
+          const value = typeof progress === "number" ? progress : 0;
+          await this.updateJobProgress(jobData.jobId, value);
+        }
+      })();
     });
 
     this.workers.set(queueName, worker);
@@ -437,17 +461,84 @@ export class QueueService {
    */
   async close() {
     // Close all workers
-    await Promise.all(Array.from(this.workers.values()).map(worker => worker.close()));
-    
+    await Promise.all(
+      Array.from(this.workers.values()).map((worker) => worker.close())
+    );
+
     // Close all queues
-    await Promise.all(Array.from(this.queues.values()).map(queue => queue.close()));
-    
+    await Promise.all(
+      Array.from(this.queues.values()).map((queue) => queue.close())
+    );
+
     // Close Redis connection
     await this.connection.quit();
   }
+
+  // Singleton instance management and static proxies for controllers/workers
+  private static _instance: QueueService | null = null;
+
+  static init(redisUrl: string): QueueService {
+    const instance = new QueueService(redisUrl);
+    QueueService._instance = instance;
+    return instance;
+  }
+
+  private static get instance(): QueueService {
+    if (!QueueService._instance) {
+      throw new AppError("QueueService not initialized", 500);
+    }
+    return QueueService._instance;
+  }
+
+  // Static proxy methods
+  static addJob<T = any, R = any>(
+    queueName: string,
+    jobType: JobType,
+    data: T,
+    priority: JobPriority = JobPriority.NORMAL,
+    delay?: number
+  ): Promise<string> {
+    return QueueService.instance.addJob<T, R>(queueName, jobType, data, priority, delay);
+  }
+
+  static getJobStatus(jobId: string) {
+    return QueueService.instance.getJobStatus(jobId);
+  }
+
+  static updateJobProgress(jobId: string, progress: number, data?: any) {
+    return QueueService.instance.updateJobProgress(jobId, progress, data);
+  }
+
+  static completeJob(jobId: string, result: any) {
+    return QueueService.instance.completeJob(jobId, result);
+  }
+
+  static failJob(jobId: string, error: string) {
+    return QueueService.instance.failJob(jobId, error);
+  }
+
+  static cancelJob(jobId: string) {
+    return QueueService.instance.cancelJob(jobId);
+  }
+
+  static getQueueMetrics(queueName?: string) {
+    return QueueService.instance.getQueueMetrics(queueName);
+  }
+
+  static cleanOldJobs(queueName: string, olderThanMs: number = 24 * 60 * 60 * 1000) {
+    return QueueService.instance.cleanOldJobs(queueName, olderThanMs);
+  }
+
+  static createWorker(queueName: string, processor: (job: BullJob) => Promise<any>) {
+    return QueueService.instance.createWorker(queueName, processor);
+  }
+
+  static close() {
+    return QueueService.instance.close();
+  }
 }
 
-// Export a function to create the service with dependency injection
+// Export a function to create and set the singleton service
 export const createQueueService = (redisUrl: string) => {
-  return new QueueService(redisUrl);
+  return QueueService.init(redisUrl);
 };
