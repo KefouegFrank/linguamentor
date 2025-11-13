@@ -7,6 +7,7 @@ import { FileStatus, FileType, JobType, JobPriority } from "@prisma/client";
 import { AccessTokenPayload } from "../types/auth.types";
 import crypto from "crypto";
 import { AppError } from "../utils/errors";
+import { auditLogger } from "../utils/auditLogger";
 
 /**
  * Request types
@@ -106,6 +107,15 @@ export const createPresignedUpload = async (
         },
       },
     });
+    // Audit log
+    await auditLogger({
+      action: "file.upload_url.created",
+      resource: file.id,
+      userId,
+      ip: req.ip,
+      userAgent: req.headers["user-agent"] as string,
+      metadata: { mimeType: contentType, size, fileType },
+    });
   } catch (error) {
     next(error);
   }
@@ -157,6 +167,14 @@ export const confirmUpload = async (
       data: {
         file: updatedFile,
       },
+    });
+    // Audit log
+    await auditLogger({
+      action: "file.upload.confirmed",
+      resource: fileId,
+      userId,
+      ip: req.ip,
+      userAgent: req.headers["user-agent"] as string,
     });
   } catch (error) {
     next(error);
@@ -210,6 +228,14 @@ export const getDownloadUrl = async (
           fileType: file.fileType,
         },
       },
+    });
+    // Audit log
+    await auditLogger({
+      action: "file.download_url.created",
+      resource: fileId,
+      userId,
+      ip: req.ip,
+      userAgent: req.headers["user-agent"] as string,
     });
   } catch (error) {
     next(error);
@@ -295,6 +321,15 @@ export const processFile = async (
         jobId,
         message: "File processing job queued successfully",
       },
+    });
+    // Audit log
+    await auditLogger({
+      action: "file.process.queued",
+      resource: file.id,
+      userId,
+      ip: req.ip,
+      userAgent: req.headers["user-agent"] as string,
+      metadata: { jobId, operation, priority },
     });
   } catch (error) {
     next(error);
@@ -435,6 +470,14 @@ export const getFile = async (
         file,
       },
     });
+    // Audit log
+    await auditLogger({
+      action: "file.viewed",
+      resource: fileId,
+      userId,
+      ip: req.ip,
+      userAgent: req.headers["user-agent"] as string,
+    });
   } catch (error) {
     next(error);
   }
@@ -481,6 +524,14 @@ export const deleteFile = async (
     res.status(200).json({
       success: true,
       message: "File deleted successfully",
+    });
+    // Audit log
+    await auditLogger({
+      action: "file.deleted",
+      resource: fileId,
+      userId,
+      ip: req.ip,
+      userAgent: req.headers["user-agent"] as string,
     });
   } catch (error) {
     next(error);

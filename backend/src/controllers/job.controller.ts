@@ -29,6 +29,7 @@ interface JobWebhookRequest extends Request {
     "x-service-token"?: string;
     "x-timestamp"?: string;
     "x-idempotency-key"?: string;
+    "x-signature"?: string;
   };
   body: {
     jobId: string;

@@ -7,6 +7,10 @@ import { Request, Response } from "express";
 import { authService } from "../services/auth.service";
 import { auditLogger } from "../utils/auditLogger";
 import { verifyRefreshToken } from "../utils/auth.utils";
+import { prisma } from "../prisma/client";
+import { TokenService } from "../services/token.service";
+import { emailService } from "../services/email.service";
+import { hashPassword } from "../utils/auth.utils";
 
 /**
  * Register a new user
@@ -250,5 +254,155 @@ export const getCurrentUser = async (
       success: false,
       message: "An error occurred while fetching user data. Please try again.",
     });
+  }
+};
+
+/**
+ * Send email verification to current authenticated user
+ * POST /api/auth/verify/send
+ * Requires authentication
+ */
+export const sendVerificationEmail = async (
+  req: Request,
+  res: Response
+): Promise<void> => {
+  try {
+    const userId = req.user?.userId;
+    if (!userId) {
+      res.status(401).json({ success: false, message: "Authentication required" });
+      return;
+    }
+
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    if (!user) {
+      res.status(404).json({ success: false, message: "User not found" });
+      return;
+    }
+
+    const tokenService = new TokenService(prisma as any);
+    const { token } = await tokenService.createToken(user.id, "email_verification");
+    await emailService.sendVerificationEmail(user.email, token, user.firstName || user.email);
+
+    res.status(200).json({ success: true, message: "Verification email sent" });
+
+    await auditLogger({
+      action: "send_verification_email",
+      resource: "auth",
+      userId: user.id,
+      ip: req.ip,
+      userAgent: req.headers["user-agent"],
+    });
+  } catch (error) {
+    console.error("Send verification email error:", error);
+    res.status(500).json({ success: false, message: "Failed to send verification email" });
+  }
+};
+
+/**
+ * Confirm email verification
+ * POST /api/auth/verify/confirm
+ */
+export const confirmEmailVerification = async (
+  req: Request,
+  res: Response
+): Promise<void> => {
+  try {
+    const { token } = req.body as { token: string };
+    const tokenService = new TokenService(prisma as any);
+    const result = await tokenService.validateToken(token, "email_verification");
+
+    if (!result.isValid || !result.userId) {
+      res.status(400).json({ success: false, message: result.error || "Invalid verification token" });
+      return;
+    }
+
+    await prisma.user.update({ where: { id: result.userId }, data: { emailVerified: true } });
+    await tokenService.markTokenAsUsed(token, "email_verification");
+
+    res.status(200).json({ success: true, message: "Email verified successfully" });
+
+    await auditLogger({
+      action: "verify_email",
+      resource: "auth",
+      userId: result.userId,
+      ip: req.ip,
+      userAgent: req.headers["user-agent"],
+    });
+  } catch (error) {
+    console.error("Email verification error:", error);
+    res.status(500).json({ success: false, message: "Failed to verify email" });
+  }
+};
+
+/**
+ * Request password reset
+ * POST /api/auth/password/reset/request
+ */
+export const requestPasswordReset = async (
+  req: Request,
+  res: Response
+): Promise<void> => {
+  try {
+    const { email } = req.body as { email: string };
+    const user = await prisma.user.findUnique({ where: { email: email.toLowerCase() } });
+
+    if (user) {
+      const tokenService = new TokenService(prisma as any);
+      const { token } = await tokenService.createToken(user.id, "password_reset");
+      await emailService.sendPasswordResetEmail(user.email, token, user.firstName || user.email);
+
+      await auditLogger({
+        action: "password_reset_request",
+        resource: "auth",
+        userId: user.id,
+        ip: req.ip,
+        userAgent: req.headers["user-agent"],
+        metadata: { email: user.email },
+      });
+    }
+
+    // Always return success to avoid disclosing whether account exists
+    res.status(200).json({ success: true, message: "If an account exists, a reset email has been sent." });
+  } catch (error) {
+    console.error("Password reset request error:", error);
+    // Still return success (idempotent behavior)
+    res.status(200).json({ success: true, message: "If an account exists, a reset email has been sent." });
+  }
+};
+
+/**
+ * Confirm password reset
+ * POST /api/auth/password/reset/confirm
+ */
+export const confirmPasswordReset = async (
+  req: Request,
+  res: Response
+): Promise<void> => {
+  try {
+    const { token, newPassword } = req.body as { token: string; newPassword: string };
+    const tokenService = new TokenService(prisma as any);
+    const result = await tokenService.validateToken(token, "password_reset");
+
+    if (!result.isValid || !result.userId) {
+      res.status(400).json({ success: false, message: result.error || "Invalid reset token" });
+      return;
+    }
+
+    const passwordHash = await hashPassword(newPassword);
+    await prisma.user.update({ where: { id: result.userId }, data: { passwordHash } });
+    await tokenService.markTokenAsUsed(token, "password_reset");
+
+    res.status(200).json({ success: true, message: "Password reset successfully" });
+
+    await auditLogger({
+      action: "password_reset_confirm",
+      resource: "auth",
+      userId: result.userId,
+      ip: req.ip,
+      userAgent: req.headers["user-agent"],
+    });
+  } catch (error) {
+    console.error("Password reset confirm error:", error);
+    res.status(500).json({ success: false, message: "Failed to reset password" });
   }
 };
