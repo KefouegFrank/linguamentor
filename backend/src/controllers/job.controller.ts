@@ -27,6 +27,8 @@ interface CreateJobRequest extends AuthenticatedRequest {
 interface JobWebhookRequest extends Request {
   headers: {
     "x-service-token"?: string;
+    "x-timestamp"?: string;
+    "x-idempotency-key"?: string;
   };
   body: {
     jobId: string;
@@ -369,17 +371,33 @@ export const handleJobWebhook = async (
     const { jobId, status, result, error, metadata } = req.body;
     const serviceToken = req.headers["x-service-token"];
     const signature = (req.headers as any)["x-signature"] as string | undefined;
+    const timestampHeader = req.headers["x-timestamp"];
+    const idempotencyKey = req.headers["x-idempotency-key"];
 
     // Validate service token
     if (serviceToken !== config.internalService.token) {
       throw new AppError("Invalid service token", 401);
     }
 
-    // Optional: Validate HMAC signature if configured
+    // Validate timestamp freshness (5 minute window) and idempotency key presence
+    if (!timestampHeader || !idempotencyKey) {
+      throw new AppError("Missing timestamp or idempotency key", 400);
+    }
+    const timestamp = Number(timestampHeader);
+    if (!Number.isFinite(timestamp)) {
+      throw new AppError("Invalid timestamp", 400);
+    }
+    const now = Date.now();
+    const fiveMinutes = 5 * 60 * 1000;
+    if (Math.abs(now - timestamp) > fiveMinutes) {
+      throw new AppError("Webhook timestamp out of acceptable window", 401);
+    }
+
+    // Optional: Validate HMAC signature if configured (include timestamp and idempotency key)
     if (config.internalService.webhookSecret) {
       try {
         const crypto = await import("node:crypto");
-        const payloadString = JSON.stringify({ jobId, status, result, error, metadata });
+        const payloadString = JSON.stringify({ jobId, status, result, error, metadata, timestamp, idempotencyKey });
         const hmac = crypto.createHmac("sha256", config.internalService.webhookSecret);
         hmac.update(payloadString);
         const expected = hmac.digest("hex");
@@ -387,7 +405,6 @@ export const handleJobWebhook = async (
           throw new AppError("Invalid webhook signature", 401);
         }
       } catch (e) {
-        // If signature validation fails, block the request
         if (e instanceof AppError) throw e;
         throw new AppError("Webhook signature validation failed", 401);
       }
@@ -401,21 +418,32 @@ export const handleJobWebhook = async (
       throw new AppError("Job not found", 404);
     }
 
+    // Idempotency: check if this idempotencyKey was already processed
+    const existingMetadata: any = (job as any).metadata || {};
+    const processedKeys: string[] = Array.isArray(existingMetadata.webhookProcessedKeys)
+      ? existingMetadata.webhookProcessedKeys
+      : [];
+    if (processedKeys.includes(idempotencyKey as string)) {
+      return res.status(200).json({ success: true, message: "Webhook already processed" });
+    }
+
     if (status === "completed") {
       await QueueService.completeJob(jobId, result);
     } else if (status === "failed") {
       await QueueService.failJob(jobId, error || "Job failed");
     }
 
-    // Store metadata if provided
-    if (metadata) {
-      await prisma.job.update({
-        where: { id: jobId },
-        data: {
-          metadata: metadata as any,
-        },
-      });
-    }
+    // Store metadata (merged) and record processed idempotency key
+    const newMetadata = {
+      ...(existingMetadata || {}),
+      ...(metadata || {}),
+      webhookProcessedKeys: [...processedKeys, idempotencyKey],
+      webhookLastTimestamp: timestamp,
+    } as any;
+    await prisma.job.update({
+      where: { id: jobId },
+      data: { metadata: newMetadata },
+    });
 
     res.status(200).json({
       success: true,

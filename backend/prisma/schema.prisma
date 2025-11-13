@@ -782,6 +782,12 @@ model Job {
   workerId     String? @map("worker_id") // Which worker processed this job
   attempts     Int @default(0)
   maxAttempts  Int @default(3) @map("max_attempts")
+
+  // Inference tracking
+  jobModel     String? @map("job_model")
+  modelVersion String? @map("model_version")
+  cost         Float?  @map("cost")
+  latencyMs    Int?    @map("latency_ms")
   
   // Timing
   startedAt   DateTime? @map("started_at")
@@ -826,4 +832,19 @@ model Job {
   @@index([expiresAt])
   @@index([status, createdAt])
   @@map("jobs")
+}
+
+// ============================================
+// AUDIT LOGS
+// ============================================
+
+model AuditLog {
+  id        String   @id @default(uuid())
+  userId    String?
+  action    String
+  resource  String?
+  metadata  Json?
+  ip        String?
+  userAgent String?
+  createdAt DateTime @default(now())
 }

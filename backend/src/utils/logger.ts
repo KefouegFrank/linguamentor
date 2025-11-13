@@ -1,29 +1,30 @@
 /**
- * Simple logger utility for logging messages
- * In production, this could be replaced with Winston, Pino, or similar logging libraries
+ * Pino logger configured for JSON structured logs.
+ * Includes correlation id and optional jobId tagging for cross-service tracing.
  */
+import pino from "pino";
 
-export const logger = {
-  info: (message: string, meta?: any) => {
-    const timestamp = new Date().toISOString();
-    console.log(`[${timestamp}] INFO: ${message}`, meta ? JSON.stringify(meta) : '');
-  },
+const level =
+  process.env.LOG_LEVEL ||
+  (process.env.NODE_ENV === "production" ? "info" : "debug");
 
-  error: (message: string, error?: any) => {
-    const timestamp = new Date().toISOString();
-    console.error(`[${timestamp}] ERROR: ${message}`, error);
-  },
+export const logger = pino({
+  level,
+  base: undefined, // omit pid/hostname to reduce noise
+  timestamp: pino.stdTimeFunctions.isoTime,
+});
 
-  warn: (message: string, meta?: any) => {
-    const timestamp = new Date().toISOString();
-    console.warn(`[${timestamp}] WARN: ${message}`, meta ? JSON.stringify(meta) : '');
-  },
-
-  debug: (message: string, meta?: any) => {
-    // Only log debug messages in development
-    if (process.env.NODE_ENV !== 'production') {
-      const timestamp = new Date().toISOString();
-      console.debug(`[${timestamp}] DEBUG: ${message}`, meta ? JSON.stringify(meta) : '');
-    }
-  },
+/**
+ * Create a child logger with correlation id and optional jobId
+ */
+export const withContext = (context: {
+  correlationId?: string;
+  jobId?: string;
+  userId?: string;
+}) => {
+  const bindings: Record<string, string> = {};
+  if (context.correlationId) bindings.correlationId = context.correlationId;
+  if (context.jobId) bindings.jobId = context.jobId;
+  if (context.userId) bindings.userId = context.userId;
+  return logger.child(bindings);
 };

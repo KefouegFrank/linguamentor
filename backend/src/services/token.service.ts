@@ -61,7 +61,7 @@ export class TokenService {
 
       return { token, expiresAt };
     } catch (error) {
-      logger.error("Error creating token:", error);
+      logger.error({ err: error as any }, "Error creating token");
       throw new Error("Failed to create token");
     }
   }
@@ -102,7 +102,7 @@ export class TokenService {
 
       return { isValid: true, userId: tokenRecord.userId };
     } catch (error) {
-      logger.error("Error validating token:", error);
+      logger.error({ err: error as any }, "Error validating token");
       return { isValid: false, error: "Failed to validate token" };
     }
   }
@@ -133,7 +133,7 @@ export class TokenService {
 
       logger.info(`Token marked as used: ${token}`);
     } catch (error) {
-      logger.error("Error marking token as used:", error);
+      logger.error({ err: error as any }, "Error marking token as used");
       throw new Error("Failed to mark token as used");
     }
   }
@@ -164,7 +164,7 @@ export class TokenService {
 
       logger.info(`Cleaned up existing ${type} tokens for user ${userId}`);
     } catch (error) {
-      logger.error("Error cleaning up existing tokens:", error);
+      logger.error({ err: error as any }, "Error cleaning up existing tokens");
       // Don't throw - this is a cleanup operation
     }
   }
@@ -195,7 +195,7 @@ export class TokenService {
       const totalDeleted = emailResult.count + passwordResult.count;
       logger.info(`Cleaned up ${totalDeleted} expired tokens`);
     } catch (error) {
-      logger.error("Error cleaning up expired tokens:", error);
+      logger.error({ err: error as any }, "Error cleaning up expired tokens");
       throw new Error("Failed to clean up expired tokens");
     }
   }
