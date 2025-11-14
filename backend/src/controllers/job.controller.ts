@@ -2,11 +2,12 @@ import { Request, Response, NextFunction } from "express";
 import { prisma } from "../prisma/client";
 import { QueueService, QUEUE_NAMES } from "../services/queue.service";
 import { AppError } from "../utils/errors";
-import { JobStatus, JobType, JobPriority, FileStatus } from "@prisma/client";
+import { JobStatus, JobType, JobPriority, FileStatus, NotificationType } from "@prisma/client";
 import { config } from "../config/config";
 import { AccessTokenPayload } from "../types/auth.types";
 import { usageService } from "../services/usage.service";
 import { auditLogger } from "../utils/auditLogger";
+import { notificationService } from "../services/notification.service";
 
 /**
  * Request types
@@ -73,6 +74,20 @@ export const createJob = async (
         correlationId: (req as any).correlationId,
         metadata: { tokensUsed: usage.tokensUsed, dailyQuota: usage.dailyQuota, monthlyQuota: usage.monthlyQuota },
       });
+      // Create in-app notification for quota exceeded
+      try {
+        await notificationService.createNotification({
+          userId,
+          type: NotificationType.QUOTA_EXCEEDED,
+          title: "Usage quota exceeded",
+          message: "You have reached your daily or monthly quota. Please wait for reset or contact support.",
+          metadata: {
+            tokensUsed: usage.tokensUsed,
+            dailyQuota: usage.dailyQuota,
+            monthlyQuota: usage.monthlyQuota,
+          },
+        });
+      } catch {}
       throw new AppError("Quota exceeded. Please wait for reset or contact support.", 403);
     }
 
@@ -529,6 +544,17 @@ export const handleJobWebhook = async (
                   data: { score, feedback, sessionId },
                 });
               }
+
+              // Create in-app notification for exam feedback ready
+              try {
+                await notificationService.createNotification({
+                  userId: userIdFromJob,
+                  type: NotificationType.EXAM_FEEDBACK_READY,
+                  title: "Your exam feedback is ready",
+                  message: typeof score === "number" ? `Your exam was scored. Score: ${score}.` : "Your exam feedback is now available.",
+                  metadata: { sessionId, submissionId, score },
+                });
+              } catch {}
             }
           } catch {}
         }
