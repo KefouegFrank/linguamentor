@@ -14,139 +14,65 @@ export const createAIProcessingWorker = () => {
     QUEUE_NAMES.AI_PROCESSING,
     async (job: BullJob) => {
       const { jobId, data } = job.data;
-      const { fileId, operation, targetLanguage, webhookUrl, userId } = data;
+      const { fileId, operation, targetLanguage, text, maxWords, userId } = data;
 
-      console.log(
-        `Processing AI job ${jobId}: ${operation} for file ${fileId}`
-      );
+      console.log(`Delegating AI job ${jobId}: ${operation} to ai-service`);
 
-      try {
-        // Get file details
-        const file = await prisma.file.findUnique({
-          where: { id: fileId },
-        });
+      // Build envelope expected by ai-service
+      let envelope: any;
 
+      if (operation === "transcribe") {
+        const file = await prisma.file.findUnique({ where: { id: fileId } });
         if (!file || !file.s3Key) {
           throw new Error("File not found or not uploaded");
         }
-
-        // Download file from S3
-        const fileBuffer = await s3Service.downloadFile(file.s3Key);
-
-        // Simulate AI processing (replace with actual AI service call)
-        let result: any;
-        let processingTime = 0;
-        const startTime = Date.now();
-
-        switch (operation) {
-          case "transcribe":
-            // Simulate transcription
-            await simulateProgress(job, 30, "Transcribing audio...");
-            processingTime = Date.now() - startTime;
-            result = {
-              text: "This is a simulated transcription result.",
-              language: "en",
-              confidence: 0.95,
-              duration: 120,
-            };
-            break;
-
-          case "translate":
-            // Simulate translation
-            await simulateProgress(job, 25, "Translating text...");
-            processingTime = Date.now() - startTime;
-            result = {
-              originalText: "Hello world",
-              translatedText: "Hola mundo",
-              sourceLanguage: "en",
-              targetLanguage: targetLanguage || "es",
-              confidence: 0.92,
-            };
-            break;
-
-          case "summarize":
-            // Simulate summarization
-            await simulateProgress(job, 20, "Summarizing content...");
-            processingTime = Date.now() - startTime;
-            result = {
-              summary: "This is a simulated summary of the content.",
-              originalLength: 1000,
-              summaryLength: 150,
-              keyPoints: ["Point 1", "Point 2", "Point 3"],
-            };
-            break;
-
-          default:
-            throw new Error(`Unsupported operation: ${operation}`);
-        }
-
-        // Create output file if needed
-        let outputFileId: string | undefined;
-        if (operation === "translate" || operation === "transcribe") {
-          const outputContent = JSON.stringify(result, null, 2);
-          const outputBuffer = Buffer.from(outputContent);
-
-          const outputKey = `outputs/${fileId}-${operation}-${Date.now()}.json`;
-          const outputUrl = await s3Service.uploadFile(
-            outputBuffer,
-            outputKey,
-            "application/json"
-          );
-
-          // Create output file record (aligned with Prisma schema)
-          const outputFile = await prisma.file.create({
-            data: {
-              originalName: `${file.originalName}-${operation}.json`,
-              fileName: outputKey,
-              mimeType: "application/json",
-              size: BigInt(outputBuffer.length),
-              fileType: file.fileType,
-              status: FileStatus.UPLOADED,
-              s3Bucket: config.aws.s3Bucket,
-              s3Key: outputKey,
-              s3Url: outputUrl,
-              userId: userId,
-            },
-          });
-
-          outputFileId = outputFile.id;
-        }
-
-        // Call webhook if provided
-        if (webhookUrl) {
-          try {
-            await axios.post(webhookUrl, {
-              jobId,
-              status: "completed",
-              result,
-              processingTime,
-            });
-          } catch (webhookError) {
-            console.error("Failed to call webhook:", webhookError);
-          }
-        }
-
-        return {
-          result,
-          processingTime,
-          outputFileId,
+        envelope = {
+          jobId,
+          type: "asr",
+          payload: {
+            audio_s3_key: file.s3Key,
+            language: data?.language,
+            user_id: userId,
+          },
         };
-      } catch (error) {
-        // Call webhook with error if provided
-        if (webhookUrl) {
-          try {
-            await axios.post(webhookUrl, {
-              jobId,
-              status: "failed",
-              error: error instanceof Error ? error.message : "Unknown error",
-            });
-          } catch (webhookError) {
-            console.error("Failed to call error webhook:", webhookError);
-          }
+      } else if (operation === "translate") {
+        if (!text && !data?.sourceText) {
+          throw new Error("Translate operation requires 'text' in job data");
         }
-
-        throw error;
+        envelope = {
+          jobId,
+          type: "translate",
+          payload: {
+            text: text || data.sourceText,
+            target_language: targetLanguage || "en",
+            user_id: userId,
+          },
+        };
+      } else if (operation === "summarize") {
+        if (!text && !data?.sourceText) {
+          throw new Error("Summarize operation requires 'text' in job data");
+        }
+        envelope = {
+          jobId,
+          type: "summarize",
+          payload: {
+            text: text || data.sourceText,
+            max_words: maxWords || 120,
+            user_id: userId,
+          },
+        };
+      } else {
+        throw new Error(`Unsupported operation: ${operation}`);
       }
+
+      // Push to ai-service Redis list
+      await QueueService.publishAIEnvelope(envelope);
+
+      // Update minimal progress to indicate delegation
+      await QueueService.updateJobProgress(jobId, 1);
+
+      // Return a lightweight marker; actual completion comes via internal webhook
+      return { delegated: true };
     }
   );
 };

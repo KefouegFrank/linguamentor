@@ -137,6 +137,7 @@ export const config = {
   internalService: {
     token: toStr(process.env.INTERNAL_SERVICE_TOKEN, "dev-internal-token"),
     webhookSecret: toStr(process.env.WEBHOOK_SECRET, ""),
+    aiQueueName: toStr(process.env.AI_QUEUE_NAME, "ai-jobs"),
   },
   upload: {
     maxFileSize: UPLOAD_MAX_FILE_SIZE,

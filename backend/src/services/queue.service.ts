@@ -3,6 +3,7 @@ import IORedis from "ioredis";
 import { prisma } from "../prisma/client";
 import { AppError } from "../utils/errors";
 import { JobStatus, JobType, JobPriority } from "@prisma/client";
+import { config } from "../config/config";
 
 // Queue names
 export const QUEUE_NAMES = {
@@ -198,6 +199,14 @@ export class QueueService {
       outputFile: job.outputFile,
       queueJobStatus,
     };
+  }
+
+  /**
+   * Publish an AI job envelope to the AI service Redis list
+   */
+  async publishAIEnvelope(envelope: Record<string, any>): Promise<void> {
+    const listName = config.internalService.aiQueueName;
+    await this.connection.rpush(listName, JSON.stringify(envelope));
   }
 
   /**
@@ -418,8 +427,13 @@ export class QueueService {
     // Handle worker events
     worker.on("completed", (job, result, _prev) => {
       void (async () => {
-        console.log(`Job ${job?.id} completed`);
         const jobData = job?.data;
+        // For AI queue, completion is reported via webhook; skip auto-complete
+        if (queueName === QUEUE_NAMES.AI_PROCESSING) {
+          console.log(`Job ${job?.id} delegated to ai-service; awaiting webhook.`);
+          return;
+        }
+        console.log(`Job ${job?.id} completed`);
         if (jobData?.jobId) {
           await this.completeJob(jobData.jobId, result);
         }
@@ -438,6 +452,19 @@ export class QueueService {
           if (maxAttemptsReached) {
             console.log(`Job ${jobData.jobId} reached max attempts`);
           }
+        }
+      })();
+    });
+
+    // Mark job as processing when picked up by worker
+    worker.on("active", (job: BullJob) => {
+      void (async () => {
+        const jobData = job?.data;
+        if (jobData?.jobId) {
+          await prisma.job.update({
+            where: { id: jobData.jobId },
+            data: { status: JobStatus.PROCESSING, startedAt: new Date() },
+          });
         }
       })();
     });
@@ -531,6 +558,10 @@ export class QueueService {
 
   static createWorker(queueName: string, processor: (job: BullJob) => Promise<any>) {
     return QueueService.instance.createWorker(queueName, processor);
+  }
+
+  static publishAIEnvelope(envelope: Record<string, any>) {
+    return QueueService.instance.publishAIEnvelope(envelope);
   }
 
   static close() {
