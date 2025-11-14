@@ -5,6 +5,8 @@ import { s3Service } from "../services/s3.service";
 import { config } from "../config/config";
 import { JobStatus, JobType, FileStatus } from "@prisma/client";
 import axios from "axios";
+import { emailService } from "../services/email.service";
+import { usageService } from "../services/usage.service";
 
 /**
  * AI Processing Job Worker
@@ -14,7 +16,7 @@ export const createAIProcessingWorker = () => {
     QUEUE_NAMES.AI_PROCESSING,
     async (job: BullJob) => {
       const { jobId, data } = job.data;
-      const { fileId, operation, targetLanguage, text, maxWords, userId } = data;
+      const { fileId, operation, targetLanguage, text, maxWords, userId, submissionId, sessionId, examType, submissionType, textData } = data;
 
       console.log(`Delegating AI job ${jobId}: ${operation} to ai-service`);
 
@@ -58,6 +60,32 @@ export const createAIProcessingWorker = () => {
           payload: {
             text: text || data.sourceText,
             max_words: maxWords || 120,
+            user_id: userId,
+          },
+        };
+      } else if (operation === "exam_score") {
+        // Build assessment envelope
+        let source: any = {};
+        if (submissionType === "TEXT" && (textData || text)) {
+          source = { text: textData || text };
+        } else if (submissionType === "AUDIO" && fileId) {
+          const file = await prisma.file.findUnique({ where: { id: fileId } });
+          if (!file || !file.s3Key) {
+            throw new Error("File not found or not uploaded for assessment");
+          }
+          source = { audio_s3_key: file.s3Key };
+        } else {
+          throw new Error("Invalid submission for assessment scoring");
+        }
+
+        envelope = {
+          jobId,
+          type: "assessment",
+          payload: {
+            ...source,
+            exam_type: examType,
+            session_id: sessionId,
+            submission_id: submissionId,
             user_id: userId,
           },
         };
@@ -242,22 +270,38 @@ export const createEmailNotificationWorker = () => {
       console.log(`Processing email job ${jobId}: ${subject} to ${to}`);
 
       try {
-        // Simulate email sending
         await simulateProgress(job, 5, "Sending email...");
 
-        // Simulate email service integration
-        const messageId = `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-
-        // In a real implementation, you would integrate with an email service like:
-        // - SendGrid
-        // - AWS SES
-        // - Nodemailer with SMTP
-
-        console.log(`Email sent successfully: ${messageId}`);
+        if (template === "exam_feedback_ready") {
+          const details = {
+            score: emailData?.score,
+            feedback: emailData?.feedback,
+            sessionId: emailData?.sessionId,
+            examType: emailData?.examType,
+            dashboardUrl: emailData?.dashboardUrl,
+          };
+          await emailService.sendExamFeedbackEmail(
+            to,
+            emailData?.userName || to,
+            details
+          );
+        } else if (template === "generic") {
+          await emailService.sendEmailWithRetry(to, {
+            subject: subject || "Notification",
+            html: `<p>${emailData?.html || emailData?.message || "You have a new notification."}</p>`,
+            text: emailData?.text || emailData?.message || "You have a new notification.",
+          });
+        } else {
+          // Default fallback
+          await emailService.sendEmailWithRetry(to, {
+            subject: subject || "Notification",
+            html: `<p>${emailData?.message || "You have a new notification."}</p>`,
+            text: emailData?.message || "You have a new notification.",
+          });
+        }
 
         return {
           sent: true,
-          messageId,
           recipient: to,
           subject,
           template,
@@ -265,6 +309,28 @@ export const createEmailNotificationWorker = () => {
       } catch (error) {
         throw error;
       }
+    }
+  );
+};
+
+/**
+ * System Tasks Worker (recurring cron jobs)
+ */
+export const createSystemTasksWorker = () => {
+  return QueueService.createWorker(
+    QUEUE_NAMES.SYSTEM_TASKS,
+    async (job: BullJob) => {
+      const { data } = job;
+      const task = data?.task as string;
+      if (task === "usage.reset.daily") {
+        await usageService.resetDaily();
+        return { ok: true, task };
+      }
+      if (task === "usage.reset.monthly") {
+        await usageService.resetMonthly();
+        return { ok: true, task };
+      }
+      throw new Error(`Unknown system task: ${task}`);
     }
   );
 };
@@ -291,6 +357,7 @@ export const initializeWorkers = () => {
   const aiWorker = createAIProcessingWorker();
   const fileWorker = createFileProcessingWorker();
   const emailWorker = createEmailNotificationWorker();
+  const systemWorker = createSystemTasksWorker();
 
   console.log("Queue workers initialized successfully");
 
@@ -298,7 +365,25 @@ export const initializeWorkers = () => {
     aiWorker,
     fileWorker,
     emailWorker,
+    systemWorker,
   };
+};
+
+export const scheduleRecurringUsageTasks = async () => {
+  // Daily at midnight
+  await QueueService.scheduleRecurringTask(
+    QUEUE_NAMES.SYSTEM_TASKS,
+    "usage.reset.daily",
+    { task: "usage.reset.daily" },
+    "0 0 * * *"
+  );
+  // Monthly at midnight on the 1st
+  await QueueService.scheduleRecurringTask(
+    QUEUE_NAMES.SYSTEM_TASKS,
+    "usage.reset.monthly",
+    { task: "usage.reset.monthly" },
+    "0 0 1 * *"
+  );
 };
 
 /**

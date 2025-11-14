@@ -286,6 +286,70 @@ This is an automated message from LinguaMentor.
   }
 
   /**
+   * Generate exam feedback ready template
+   */
+  public generateExamFeedbackReadyEmail(
+    userName: string,
+    details: { score?: number; feedback?: string; sessionId?: string; examType?: string; dashboardUrl?: string }
+  ): EmailTemplate {
+    const baseUrl = process.env.FRONTEND_URL || "http://localhost:3000";
+    const examUrl = details.dashboardUrl || `${baseUrl}/exams/${details.sessionId || ""}`;
+    const safeFeedback = (details.feedback || "").slice(0, 500);
+
+    return {
+      subject: `Your ${details.examType || "exam"} feedback is ready` ,
+      html: `
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <meta charset="utf-8">
+          <title>Exam Feedback Ready</title>
+          <style>
+            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+            .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+            .header { background-color: #0EA5E9; color: white; padding: 20px; text-align: center; }
+            .content { background-color: #f9f9f9; padding: 30px; border-radius: 5px; }
+            .button { display: inline-block; padding: 12px 24px; background-color: #0EA5E9; color: white; text-decoration: none; border-radius: 5px; margin: 20px 0; }
+            .score { font-size: 24px; font-weight: bold; color: #0EA5E9; }
+            .feedback { background-color: #fff; border: 1px solid #e5e7eb; padding: 15px; border-radius: 5px; }
+            .footer { text-align: center; margin-top: 30px; font-size: 12px; color: #666; }
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <div class="header">
+              <h1>LinguaMentor</h1>
+            </div>
+            <div class="content">
+              <h2>Hello ${userName}, your exam feedback is ready!</h2>
+              ${typeof details.score === 'number' ? `<p>Your score: <span class="score">${details.score}</span></p>` : ''}
+              ${safeFeedback ? `<div class="feedback"><p>${safeFeedback}</p></div>` : ''}
+              <div style="text-align: center;">
+                <a href="${examUrl}" class="button">View Full Feedback</a>
+              </div>
+              <p>You can review detailed feedback, rubric, and next steps on your dashboard.</p>
+            </div>
+            <div class="footer">
+              <p>This is an automated message from LinguaMentor. Please do not reply to this email.</p>
+            </div>
+          </div>
+        </body>
+        </html>
+      `,
+      text: `
+Hello ${userName},
+
+Your exam feedback is ready.${typeof details.score === 'number' ? `\nScore: ${details.score}` : ''}
+
+${safeFeedback ? `Summary:\n${safeFeedback}\n` : ''}
+View your full feedback: ${examUrl}
+
+This is an automated message from LinguaMentor.
+      `,
+    };
+  }
+
+  /**
    * Send email verification email
    */
   async sendVerificationEmail(
@@ -316,6 +380,23 @@ This is an automated message from LinguaMentor.
     } catch (error) {
       console.error("Failed to send password reset email:", error);
       throw new Error("Failed to send password reset email");
+    }
+  }
+
+  /**
+   * Send exam feedback ready email
+   */
+  async sendExamFeedbackEmail(
+    email: string,
+    userName: string,
+    details: { score?: number; feedback?: string; sessionId?: string; examType?: string; dashboardUrl?: string }
+  ): Promise<void> {
+    try {
+      const template = this.generateExamFeedbackReadyEmail(userName, details);
+      await this.sendEmailWithRetry(email, template);
+    } catch (error) {
+      console.error("Failed to send exam feedback email:", error);
+      throw new Error("Failed to send exam feedback email");
     }
   }
 }

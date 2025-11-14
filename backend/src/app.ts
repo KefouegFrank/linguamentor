@@ -4,6 +4,9 @@ import helmet from "helmet";
 import authRoutes from "./routes/auth.routes";
 import fileRoutes from "./routes/file.routes";
 import jobRoutes from "./routes/job.routes";
+import usageRoutes from "./routes/usage.routes";
+import notificationRoutes from "./routes/notification.routes";
+import examRoutes from "./routes/exam.routes";
 import { corsConfig } from "./config/auth.config";
 import { IS_DEVELOPMENT } from "./config/config";
 import type { QueueService } from "./services/queue.service";
@@ -55,6 +58,9 @@ export function createApp(_queueService?: QueueService): Application {
   app.use("/api/auth", authRoutes);
   app.use("/api/files", fileRoutes);
   app.use("/api/jobs", jobRoutes);
+  app.use("/api/usage", usageRoutes);
+  app.use("/api/notifications", notificationRoutes);
+  app.use("/api/exams", examRoutes);
   // Health endpoints
   app.get("/health/live", livenessHandler);
   app.get("/health/ready", readinessHandler);

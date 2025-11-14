@@ -5,6 +5,8 @@ import { AppError } from "../utils/errors";
 import { JobStatus, JobType, JobPriority, FileStatus } from "@prisma/client";
 import { config } from "../config/config";
 import { AccessTokenPayload } from "../types/auth.types";
+import { usageService } from "../services/usage.service";
+import { auditLogger } from "../utils/auditLogger";
 
 /**
  * Request types
@@ -58,6 +60,21 @@ export const createJob = async (
       delay,
     } = req.body;
     const userId = req.user!.userId;
+
+    // Enforce quotas: block job creation if current usage meets or exceeds quota
+    const usage = await usageService.getUsage(userId);
+    if (usage.tokensUsed >= usage.dailyQuota || usage.tokensUsed >= usage.monthlyQuota) {
+      await auditLogger({
+        action: "quota.exceeded",
+        resource: "usage",
+        userId,
+        ip: req.ip,
+        userAgent: req.get("user-agent") || undefined,
+        correlationId: (req as any).correlationId,
+        metadata: { tokensUsed: usage.tokensUsed, dailyQuota: usage.dailyQuota, monthlyQuota: usage.monthlyQuota },
+      });
+      throw new AppError("Quota exceeded. Please wait for reset or contact support.", 403);
+    }
 
     // Validate file exists if fileId is provided
     if (fileId) {
@@ -113,6 +130,16 @@ export const createJob = async (
         jobId,
         message: "Job created successfully",
       },
+    });
+    // Audit log
+    await auditLogger({
+      action: "job.create",
+      resource: jobId,
+      userId,
+      ip: req.ip,
+      userAgent: req.get("user-agent") || undefined,
+      correlationId: (req as any).correlationId,
+      metadata: { type, priority, queueName, fileId },
     });
   } catch (error) {
     next(error);
@@ -430,6 +457,84 @@ export const handleJobWebhook = async (
 
     if (status === "completed") {
       await QueueService.completeJob(jobId, result);
+      // Increment usage tokens if provided in result
+      try {
+        const payload: any = (job as any).payload || {};
+        const userIdFromJob: string | undefined = payload.userId;
+        const tokensCandidate =
+          (result && typeof (result as any).tokensUsed === "number" && (result as any).tokensUsed) ||
+          (result && (result as any).tokenUsage && typeof (result as any).tokenUsage.total === "number" && (result as any).tokenUsage.total) ||
+          (result && (result as any).usage && typeof (result as any).usage.totalTokens === "number" && (result as any).usage.totalTokens) ||
+          0;
+        if (userIdFromJob && tokensCandidate > 0) {
+          await usageService.incrementTokens(userIdFromJob, tokensCandidate);
+          await auditLogger({
+            action: "usage.tokens.incremented",
+            resource: jobId,
+            userId: userIdFromJob,
+            ip: req.ip,
+            userAgent: req.get("user-agent") || undefined,
+            correlationId: (req as any).correlationId,
+            metadata: { tokensAdded: tokensCandidate },
+          });
+
+          // Exam scoring integration: persist result and notify
+          try {
+            const payload: any = (job as any)?.payload || {};
+            const submissionId: string | undefined = payload?.submissionId;
+            const sessionId: string | undefined = payload?.sessionId;
+            const isExamScore = payload?.operation === "exam_score" && submissionId && sessionId;
+            if (isExamScore) {
+              const score = Number((result?.score ?? result?.payload?.score ?? 0) || 0);
+              const rubric = (result as any)?.rubric ?? (result as any)?.payload?.rubric ?? null;
+              const feedback = (result as any)?.feedback ?? (result as any)?.payload?.feedback ?? null;
+              const aiModel = (result as any)?.model ?? (result as any)?.payload?.model ?? "unknown";
+              const aiUsage = (result as any)?.usage ?? null;
+
+              const examResult = await prisma.examResult.create({
+                data: {
+                  score,
+                  rubric: rubric as any,
+                  feedback,
+                  metadata: { model: aiModel, usage: aiUsage } as any,
+                },
+              });
+
+              await prisma.examSubmission.update({
+                where: { id: submissionId },
+                data: { aiResultId: examResult.id },
+              });
+
+              await prisma.examSession.update({
+                where: { id: sessionId },
+                data: { status: "COMPLETED" },
+              });
+
+              await auditLogger({
+                action: "exam.scored",
+                userId: userIdFromJob,
+                resource: submissionId,
+                ip: req.ip,
+                userAgent: req.get("user-agent") || undefined,
+                correlationId: (req as any).correlationId,
+                metadata: { sessionId, score },
+              });
+
+              const user = await prisma.user.findUnique({ where: { id: userIdFromJob } });
+              if (user?.email) {
+                await QueueService.addJob(QUEUE_NAMES.EMAIL_NOTIFICATIONS, "CONTENT_GENERATION" as any, {
+                  to: user.email,
+                  subject: "Exam feedback ready",
+                  template: "exam_feedback_ready",
+                  data: { score, feedback, sessionId },
+                });
+              }
+            }
+          } catch {}
+        }
+      } catch (e) {
+        // Swallow usage update errors to avoid blocking webhook processing
+      }
     } else if (status === "failed") {
       await QueueService.failJob(jobId, error || "Job failed");
     }
@@ -444,6 +549,15 @@ export const handleJobWebhook = async (
     await prisma.job.update({
       where: { id: jobId },
       data: { metadata: newMetadata },
+    });
+
+    await auditLogger({
+      action: status === "completed" ? "job.webhook.completed" : "job.webhook.failed",
+      resource: jobId,
+      ip: req.ip,
+      userAgent: req.get("user-agent") || undefined,
+      correlationId: (req as any).correlationId,
+      metadata: { status, hasResult: !!result, error: error ?? undefined },
     });
 
     res.status(200).json({

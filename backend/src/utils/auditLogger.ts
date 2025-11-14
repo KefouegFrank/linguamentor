@@ -1,5 +1,5 @@
-import { prisma } from '../prisma/client';
-import { logger } from './logger';
+import { prisma } from "../prisma/client";
+import { logger } from "./logger";
 
 export async function auditLogger(params: {
   action: string;
@@ -7,9 +7,11 @@ export async function auditLogger(params: {
   userId?: string;
   ip?: string;
   userAgent?: string;
+  correlationId?: string;
   metadata?: Record<string, any>;
 }) {
-  const { action, resource, userId, ip, userAgent, metadata } = params;
+  const { action, resource, userId, ip, userAgent, correlationId, metadata } =
+    params;
   try {
     await prisma.auditLog.create({
       data: {
@@ -18,11 +20,11 @@ export async function auditLogger(params: {
         userId,
         ip,
         userAgent,
+        correlationId,
         metadata: metadata as any,
       },
     });
   } catch (err) {
-    logger.warn({ err, action, resource, userId }, 'Failed to write audit log');
+    logger.warn({ err, action, resource, userId }, "Failed to write audit log");
   }
 }
-

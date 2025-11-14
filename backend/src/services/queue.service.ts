@@ -10,6 +10,7 @@ export const QUEUE_NAMES = {
   AI_PROCESSING: "ai-processing",
   FILE_PROCESSING: "file-processing",
   EMAIL_NOTIFICATIONS: "email-notifications",
+  SYSTEM_TASKS: "system-tasks",
 } as const;
 
 // Job data types
@@ -82,6 +83,28 @@ export class QueueService {
       });
 
       this.queues.set(queueName, queue);
+    });
+  }
+
+  /**
+   * Schedule a recurring task in a queue (no DB job record).
+   * Intended for internal system tasks like usage resets.
+   */
+  async scheduleRecurringTask(
+    queueName: string,
+    name: string,
+    data: Record<string, any>,
+    cronPattern: string
+  ) {
+    const queue = this.queues.get(queueName);
+    if (!queue) {
+      throw new AppError(`Queue ${queueName} not found`, 404);
+    }
+    await queue.add(name, data, {
+      jobId: name, // ensure single repeatable job per name
+      repeat: { pattern: cronPattern },
+      removeOnComplete: true,
+      removeOnFail: 100,
     });
   }
 
@@ -566,6 +589,15 @@ export class QueueService {
 
   static close() {
     return QueueService.instance.close();
+  }
+
+  static scheduleRecurringTask(
+    queueName: string,
+    name: string,
+    data: Record<string, any>,
+    cronPattern: string
+  ) {
+    return QueueService.instance.scheduleRecurringTask(queueName, name, data, cronPattern);
   }
 }
 

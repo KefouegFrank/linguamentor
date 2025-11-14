@@ -5,7 +5,7 @@ import { createApp } from './app';
 import { prisma } from './prisma/client';
 import { config } from './config/config';
 import { createQueueService } from './services/queue.service';
-import { initializeWorkers, shutdownWorkers } from './workers/queue.worker';
+import { initializeWorkers, shutdownWorkers, scheduleRecurringUsageTasks } from './workers/queue.worker';
 
 // Create the queue service
 const queueService = createQueueService(config.redis.url);
@@ -20,6 +20,7 @@ const server = app.listen(config.PORT, async () => {
         console.log('Connected to DB');
         // Initialize queue workers after DB connection
         initializeWorkers();
+        await scheduleRecurringUsageTasks();
         console.log('Workers initialized');
     } catch (err) {
         console.error('DB connection failed', err);

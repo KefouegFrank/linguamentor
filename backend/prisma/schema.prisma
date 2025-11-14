@@ -100,6 +100,10 @@ model User {
   passwordResetTokens     PasswordResetToken[]
   files                   File[]
   jobs                    Job[]
+  // New relations
+  usage                   UserUsage?
+  notifications           Notification[]
+  examSessions            ExamSession[]
 
   @@index([email])
   @@index([targetLanguage])
@@ -685,44 +689,46 @@ enum FileType {
 }
 
 model File {
-  id String @id @default(uuid())
+  id     String @id @default(uuid())
   userId String @map("user_id")
 
   // File metadata
-  originalName String @map("original_name")
-  fileName     String @map("file_name") // S3 key
-  mimeType     String @map("mime_type")
+  originalName String   @map("original_name")
+  fileName     String   @map("file_name") // S3 key
+  mimeType     String   @map("mime_type")
   size         BigInt
   fileType     FileType @map("file_type")
-  
+
   // Status and processing
-  status        FileStatus @default(PENDING)
-  checksum      String? // SHA-256 hash
-  metadata      Json?   @db.JsonB // additional metadata like duration, resolution, etc.
-  
+  status   FileStatus @default(PENDING)
+  checksum String? // SHA-256 hash
+  metadata Json?      @db.JsonB // additional metadata like duration, resolution, etc.
+
   // S3 information
-  s3Bucket String @map("s3_bucket")
-  s3Key    String @map("s3_key")
+  s3Bucket String  @map("s3_bucket")
+  s3Key    String  @map("s3_key")
   s3Url    String? @map("s3_url") // Public URL if applicable
-  
+
   // Processing results
-  processedUrl   String? @map("processed_url")
+  processedUrl   String?   @map("processed_url")
   processedAt    DateTime? @map("processed_at")
-  errorMessage   String? @map("error_message") @db.Text
-  processingTime Int?    @map("processing_time") // in milliseconds
-  
+  errorMessage   String?   @map("error_message") @db.Text
+  processingTime Int?      @map("processing_time") // in milliseconds
+
   // TTL for cleanup
   expiresAt DateTime? @map("expires_at")
-  
+
   // Timestamps
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
-  
+
   // Relations
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user         User  @relation(fields: [userId], references: [id], onDelete: Cascade)
   originalJobs Job[] @relation("JobOriginalFile")
   outputJobs   Job[] @relation("JobOutputFile")
-  
+  // New relations
+  examSubmissions ExamSubmission[]
+
   @@index([userId])
   @@index([status])
   @@index([fileType])
@@ -762,66 +768,66 @@ enum JobPriority {
 }
 
 model Job {
-  id String @id @default(uuid())
-  userId String @map("user_id")
+  id     String  @id @default(uuid())
+  userId String  @map("user_id")
   fileId String? @map("file_id")
-  
+
   // Job configuration
-  jobType   JobType   @map("job_type")
-  priority  JobPriority @default(NORMAL)
-  status    JobStatus @default(PENDING)
-  
+  jobType  JobType     @map("job_type")
+  priority JobPriority @default(NORMAL)
+  status   JobStatus   @default(PENDING)
+
   // Job data
-  payload Json @db.JsonB // Job-specific data
-  result  Json? @db.JsonB // Job results
+  payload  Json  @db.JsonB // Job-specific data
+  result   Json? @db.JsonB // Job results
   metadata Json? @db.JsonB // optional metadata
-  
+
   // Processing details
-  queueName    String @map("queue_name")
-  queueJobId   String? @map("queue_job_id")
-  workerId     String? @map("worker_id") // Which worker processed this job
-  attempts     Int @default(0)
-  maxAttempts  Int @default(3) @map("max_attempts")
+  queueName   String  @map("queue_name")
+  queueJobId  String? @map("queue_job_id")
+  workerId    String? @map("worker_id") // Which worker processed this job
+  attempts    Int     @default(0)
+  maxAttempts Int     @default(3) @map("max_attempts")
 
   // Inference tracking
   jobModel     String? @map("job_model")
   modelVersion String? @map("model_version")
   cost         Float?  @map("cost")
   latencyMs    Int?    @map("latency_ms")
-  
+
   // Timing
   startedAt   DateTime? @map("started_at")
   completedAt DateTime? @map("completed_at")
   failedAt    DateTime? @map("failed_at")
   timeoutAt   DateTime? @map("timeout_at")
   cancelledAt DateTime? @map("cancelled_at")
-  
+
   // Error handling
   errorMessage String? @map("error_message") @db.Text
   error        String? @db.Text
   errorStack   String? @map("error_stack") @db.Text
-  
+
   // Callbacks and webhooks
-  callbackUrl String? @map("callback_url")
+  callbackUrl   String? @map("callback_url")
   internalToken String? @map("internal_token") // INTERNAL_SERVICE_TOKEN
-  
+
   // Progress tracking
-  progress Int @default(0) // 0-100
+  progress        Int     @default(0) // 0-100
   progressMessage String? @map("progress_message")
-  outputFileId String? @map("output_file_id")
-  outputFile   File?   @relation("JobOutputFile", fields: [outputFileId], references: [id], onDelete: SetNull)
-  
+  outputFileId    String? @map("output_file_id")
+  outputFile      File?   @relation("JobOutputFile", fields: [outputFileId], references: [id], onDelete: SetNull)
+
   // TTL for cleanup
   expiresAt DateTime? @map("expires_at")
-  
+
   // Timestamps
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
-  
+
   // Relations
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user User  @relation(fields: [userId], references: [id], onDelete: Cascade)
   file File? @relation("JobOriginalFile", fields: [fileId], references: [id], onDelete: SetNull)
-  
+
   @@index([userId])
   @@index([fileId])
   @@index([jobType])
@@ -846,5 +852,134 @@ model AuditLog {
   metadata  Json?
   ip        String?
   userAgent String?
+  correlationId String?
   createdAt DateTime @default(now())
+}
+
+// ============================================
+// USAGE & QUOTAS
+// ============================================
+
+model UserUsage {
+  id     String @id @default(uuid())
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  tokensUsed   Int @default(0)
+  dailyQuota   Int @default(20000)
+  monthlyQuota Int @default(300000)
+
+  lastReset DateTime @default(now())
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@map("user_usage")
+}
+
+// ============================================
+// EXAM & LEARNING ENGINE
+// ============================================
+
+enum ExamStatus {
+  PENDING
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+enum SubmissionType {
+  TEXT
+  AUDIO
+}
+
+model ExamSession {
+  id     String @id @default(uuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  status   ExamStatus @default(PENDING)
+  examType String
+
+  startedAt   DateTime  @default(now())
+  completedAt DateTime?
+
+  metadata Json?
+
+  submissions ExamSubmission[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@index([examType])
+  @@map("exam_sessions")
+}
+
+model ExamSubmission {
+  id        String      @id @default(uuid())
+  sessionId String
+  session   ExamSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  submissionType SubmissionType
+  textData       String?
+  fileId         String?
+  file           File?          @relation(fields: [fileId], references: [id])
+
+  aiResultId String?
+  aiResult   ExamResult? @relation(fields: [aiResultId], references: [id])
+
+  createdAt DateTime @default(now())
+
+  @@index([sessionId])
+  @@map("exam_submissions")
+}
+
+model ExamResult {
+  id       String  @id @default(uuid())
+  score    Float?
+  rubric   Json?
+  feedback String?
+  metadata Json?
+
+  createdAt       DateTime         @default(now())
+  examSubmissions ExamSubmission[]
+
+  @@map("exam_results")
+}
+
+// ============================================
+// NOTIFICATIONS
+// ============================================
+
+enum NotificationType {
+  EMAIL_VERIFICATION
+  PASSWORD_RESET
+  EXAM_COMPLETED
+  EXAM_FEEDBACK_READY
+  QUOTA_EXCEEDED
+  SYSTEM_ALERT
+}
+
+model Notification {
+  id     String @id @default(uuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  type    NotificationType
+  title   String
+  message String
+
+  isRead Boolean   @default(false)
+  readAt DateTime?
+
+  metadata Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@index([type])
+  @@map("notifications")
 }
