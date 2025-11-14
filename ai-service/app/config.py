@@ -23,7 +23,6 @@ class Settings:
     WORKER_CONCURRENCY: int = int(os.getenv("WORKER_CONCURRENCY", "4"))
     # Disable worker entirely (e.g., for local API-only runs)
     DISABLE_WORKER: bool = os.getenv("DISABLE_WORKER", "false").strip().lower() in {"1", "true", "yes", "on"}
-    DISABLE_WORKER: bool = os.getenv("DISABLE_WORKER", "false").lower() in {"1", "true", "yes"}
 
     # Redis
     REDIS_URL: str = os.getenv("REDIS_URL", "redis://redis:6379/0")
@@ -32,6 +31,7 @@ class Settings:
     # Backend
     BACKEND_URL: str = os.getenv("BACKEND_URL", "http://backend:4000")
     INTERNAL_SERVICE_TOKEN: Optional[str] = os.getenv("INTERNAL_SERVICE_TOKEN")
+    WEBHOOK_SECRET: Optional[str] = os.getenv("WEBHOOK_SECRET")
 
     # AI providers
     MODEL_PROVIDER: str = os.getenv("MODEL_PROVIDER", "openai")
