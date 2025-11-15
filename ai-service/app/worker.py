@@ -67,7 +67,13 @@ class Worker:
             result = await self._handle_with_backoff(envelope)
             duration = time.perf_counter() - start
             record_job_result(envelope.type, "completed", duration)
-            await report_success(envelope.jobId, result, {"duration": duration})
+            meta = {"duration": duration}
+            if isinstance(result, dict):
+                if result.get("provider"):
+                    meta["provider"] = result["provider"]
+                if result.get("model"):
+                    meta["model"] = result["model"]
+            await report_success(envelope.jobId, result, meta)
         except Exception as e:
             duration = time.perf_counter() - start
             record_job_result(envelope.type, "failed", duration)
@@ -81,4 +87,3 @@ class Worker:
 
 
 worker = Worker()
-

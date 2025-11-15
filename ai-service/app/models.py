@@ -18,7 +18,8 @@ class JobEnvelope(BaseModel):
 
 
 class ASRPayload(BaseModel):
-    audio_s3_key: str
+    audio_s3_key: Optional[str] = None
+    audio_url: Optional[str] = None
     language: Optional[str] = None
     user_id: Optional[str] = None
 
@@ -27,6 +28,7 @@ class TTSPayload(BaseModel):
     text: str
     voice: Optional[str] = None
     language: Optional[str] = None
+    upload_url: Optional[str] = None
     user_id: Optional[str] = None
 
 
@@ -58,5 +60,6 @@ class GrammarPayload(BaseModel):
 class ScorePayload(BaseModel):
     text: str
     rubric: Optional[str] = None
+    audio_url: Optional[str] = None
+    language: Optional[str] = None
     user_id: Optional[str] = None
-

@@ -36,6 +36,24 @@ class Settings:
     # AI providers
     MODEL_PROVIDER: str = os.getenv("MODEL_PROVIDER", "openai")
     OPENAI_API_KEY: Optional[str] = os.getenv("OPENAI_API_KEY")
+    ANTHROPIC_API_KEY: Optional[str] = os.getenv("ANTHROPIC_API_KEY")
+    DEEPSEEK_API_KEY: Optional[str] = os.getenv("DEEPSEEK_API_KEY")
+    AZURE_OPENAI_API_KEY: Optional[str] = os.getenv("AZURE_OPENAI_API_KEY")
+    AZURE_OPENAI_ENDPOINT: Optional[str] = os.getenv("AZURE_OPENAI_ENDPOINT")
+
+    # ASR providers
+    DEEPGRAM_API_KEY: Optional[str] = os.getenv("DEEPGRAM_API_KEY")
+    ASSEMBLYAI_API_KEY: Optional[str] = os.getenv("ASSEMBLYAI_API_KEY")
+
+    # TTS providers
+    AZURE_TTS_KEY: Optional[str] = os.getenv("AZURE_TTS_KEY")
+    AZURE_TTS_REGION: Optional[str] = os.getenv("AZURE_TTS_REGION")
+    ELEVENLABS_API_KEY: Optional[str] = os.getenv("ELEVENLABS_API_KEY")
+
+    # Safety & limits
+    MAX_PROMPT_CHARS: int = int(os.getenv("MAX_PROMPT_CHARS", "8000"))
+    MAX_TEXT_CHARS: int = int(os.getenv("MAX_TEXT_CHARS", "20000"))
+    ENABLE_PROMPT_INJECTION_CHECKS: bool = os.getenv("ENABLE_PROMPT_INJECTION_CHECKS", "true").strip().lower() in {"1", "true", "yes", "on"}
 
     # HTTP client
     HTTP_TIMEOUT_SECONDS: float = float(os.getenv("HTTP_TIMEOUT_SECONDS", "30"))

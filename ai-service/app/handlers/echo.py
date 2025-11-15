@@ -6,6 +6,7 @@ from app.models import (
     ScorePayload,
 )
 from app.logging import log
+from app.router import router
 
 
 async def handle_echo(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -16,37 +17,27 @@ async def handle_echo(payload: Dict[str, Any]) -> Dict[str, Any]:
 
 async def handle_translate(payload: TranslationPayload) -> Dict[str, Any]:
     log.info("handler.translate.start")
-    return {
-        "translatedText": f"[MOCK] {payload.text[:50]} -> {payload.target_language}",
-        "targetLanguage": payload.target_language,
-        "provider": "mock",
-    }
+    result = await router.run("translate", payload.model_dump())
+    log.info("handler.translate.done")
+    return result
 
 
 async def handle_summarize(payload: SummarizationPayload) -> Dict[str, Any]:
     log.info("handler.summarize.start")
-    return {
-        "summary": f"[MOCK SUMMARY up to {payload.max_words} words]",
-        "provider": "mock",
-    }
+    result = await router.run("summarize", payload.model_dump())
+    log.info("handler.summarize.done")
+    return result
 
 
 async def handle_grammar(payload: GrammarPayload) -> Dict[str, Any]:
     log.info("handler.grammar.start")
-    return {
-        "issues": [
-            {"type": "spelling", "count": 1},
-            {"type": "grammar", "count": 2},
-        ],
-        "provider": "mock",
-    }
+    result = await router.run("grammar", payload.model_dump())
+    log.info("handler.grammar.done")
+    return result
 
 
 async def handle_score(payload: ScorePayload) -> Dict[str, Any]:
     log.info("handler.score.start")
-    return {
-        "score": 4.2,
-        "rubric": payload.rubric or "default",
-        "provider": "mock",
-    }
-
+    result = await router.run("score", payload.model_dump())
+    log.info("handler.score.done")
+    return result
