@@ -16,6 +16,7 @@ from typing import AsyncGenerator
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from app.routers import calibration
 
 from app.config import get_settings
 from app.dependencies import set_postgres_pool, set_redis_client
@@ -116,6 +117,8 @@ def create_app() -> FastAPI:
     # Each router handles a domain — health, evaluation, appeals, etc.
     # prefix="" means /health and /ready are at the root, not /health/health
     app.include_router(health.router)
+    
+    app.include_router(calibration.router)
 
     return app
 
