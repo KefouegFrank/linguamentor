@@ -1,4 +1,6 @@
 """
+shared/db_utils/connection.py
+
 Shared database connection utilities for all LinguaMentor Python microservices.
 Every service imports from here — never creates its own connection logic.
 
@@ -29,7 +31,6 @@ from dotenv import load_dotenv
 # .parent.parent.parent = .../ (monorepo root — where .env lives)
 _ROOT_DIR = Path(__file__).parent.parent.parent
 _ENV_FILE = _ROOT_DIR / ".env"
-
 
 # override=False means we never overwrite variables already set in the
 # environment — important in production where Vault/Kubernetes sets them
