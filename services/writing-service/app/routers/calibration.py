@@ -17,6 +17,12 @@ from app.calibration.pipeline import (
     create_calibration_run,
     run_calibration_scoring,
 )
+from app.calibration.correlation import (
+    compute_correlation,
+    store_calibration_baseline,
+    PEARSON_THRESHOLD,
+)
+
 from app.dependencies import get_db
 
 logger = logging.getLogger(__name__)
@@ -37,6 +43,21 @@ class StartRunResponse(BaseModel):
     run_label:  str
     status:     str
 
+class CorrelationResultResponse(BaseModel):
+    """Returned after correlation computation completes."""
+    run_id:                     str
+    pearson_task_response:      float
+    pearson_coherence_cohesion: float
+    pearson_lexical_resource:   float
+    pearson_grammatical_range:  float
+    pearson_overall:            float
+    passed_threshold:           bool
+    verdict:                    str
+
+
+class BaselineRequest(BaseModel):
+    """Request body for storing the approved calibration baseline."""
+    approved_by: str
 
 @router.post(
     "/runs",
@@ -108,3 +129,85 @@ async def get_run_status(
         return {"error": f"Run {run_id} not found"}
 
     return dict(row)
+
+@router.post(
+    "/runs/{run_id}/correlate",
+    response_model=CorrelationResultResponse,
+    summary="Compute Pearson correlation for a completed run",
+)
+async def run_correlation(
+    run_id: str,
+    conn: asyncpg.Connection = Depends(get_db),
+) -> CorrelationResultResponse:
+    """
+    Computes Pearson correlation between AI and human scores for this run.
+    Requires the AI scoring pipeline to have completed first.
+    Results are written to calibration_runs and returned here.
+    """
+    report = await compute_correlation(conn, run_id)
+
+    return CorrelationResultResponse(
+        run_id=run_id,
+        pearson_task_response=report.task_response.pearson_r,
+        pearson_coherence_cohesion=report.coherence_cohesion.pearson_r,
+        pearson_lexical_resource=report.lexical_resource.pearson_r,
+        pearson_grammatical_range=report.grammatical_range.pearson_r,
+        pearson_overall=report.overall_score.pearson_r,
+        passed_threshold=report.passed_overall,
+        verdict=(
+            "PASSED — Ready for Go/No-Go review"
+            if report.passed_overall
+            else "FAILED — Rubric tuning required"
+        ),
+    )
+
+
+@router.post(
+    "/runs/{run_id}/baseline",
+    summary="Store approved calibration baseline (Go/No-Go sign-off)",
+)
+async def store_baseline(
+    run_id: str,
+    request: BaselineRequest,
+    conn: asyncpg.Connection = Depends(get_db),
+) -> dict:
+    """
+    Records the immutable calibration baseline after Go/No-Go approval.
+    Only callable when correlation has passed threshold.
+    The calibration_version 'v1.0-launch' stored here appears on
+    every user score report in production.
+    """
+    # Verify correlation was actually computed and passed
+    run = await conn.fetchrow(
+        """
+        SELECT passed_threshold, pearson_overall
+        FROM linguamentor.calibration_runs
+        WHERE id = $1::uuid
+        """,
+        run_id,
+    )
+
+    if not run:
+        return {"error": f"Run {run_id} not found"}
+
+    if not run["passed_threshold"]:
+        return {
+            "error": "Correlation has not passed threshold",
+            "pearson_overall": float(run["pearson_overall"] or 0),
+            "required": PEARSON_THRESHOLD,
+        }
+
+    # Re-fetch the full report to pass to store_calibration_baseline
+    report = await compute_correlation(conn, run_id)
+    version = await store_calibration_baseline(
+        conn=conn,
+        run_id=run_id,
+        report=report,
+        approved_by=request.approved_by,
+    )
+
+    return {
+        "calibration_version": version,
+        "approved_by": request.approved_by,
+        "status": "baseline stored — Go/No-Go complete",
+    }
