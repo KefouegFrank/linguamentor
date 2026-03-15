@@ -9,10 +9,14 @@ results back to the calibration_runs table.
 
 The 0.85 threshold is non-negotiable — defined in PRD section 60
 and the Calibration Brief. This file is where that gate is enforced.
+
+Same asyncpg rule as pipeline.py: all UUID parameters are passed as
+native uuid.UUID objects, never as strings with ::uuid SQL casts.
 """
 
 import logging
 import math
+import uuid as uuid_module
 from dataclasses import dataclass
 
 import asyncpg
@@ -30,10 +34,10 @@ class CategoryCorrelation:
     Correlation result for one rubric category.
     Keeps the data clean when passing results between functions.
     """
-    category:    str
-    pearson_r:   float
-    n_samples:   int
-    passed:      bool
+    category:  str
+    pearson_r: float
+    n_samples: int
+    passed:    bool
 
     def __str__(self) -> str:
         status = "✅ PASS" if self.passed else "❌ FAIL"
@@ -51,13 +55,13 @@ class CorrelationReport:
     Full correlation results for one calibration run.
     All categories must pass for passed_overall to be True.
     """
-    run_id:               str
-    task_response:        CategoryCorrelation
-    coherence_cohesion:   CategoryCorrelation
-    lexical_resource:     CategoryCorrelation
-    grammatical_range:    CategoryCorrelation
-    overall_score:        CategoryCorrelation
-    passed_overall:       bool
+    run_id:             str
+    task_response:      CategoryCorrelation
+    coherence_cohesion: CategoryCorrelation
+    lexical_resource:   CategoryCorrelation
+    grammatical_range:  CategoryCorrelation
+    overall_score:      CategoryCorrelation
+    passed_overall:     bool
 
     def summary(self) -> str:
         """Human-readable summary for logs and the Go/No-Go report."""
@@ -83,16 +87,15 @@ def _pearson_r(x: list[float], y: list[float]) -> float:
     """
     Computes Pearson correlation coefficient between two score lists.
 
-    We implement this directly rather than pulling in numpy/scipy —
+    Implemented directly rather than pulling in numpy/scipy —
     keeps the dependency footprint small and makes the math explicit.
 
     Formula:
         r = Σ((xi - x̄)(yi - ȳ)) / sqrt(Σ(xi - x̄)² · Σ(yi - ȳ)²)
 
     Returns 0.0 if standard deviation of either list is zero —
-    that would mean all scores are identical, which makes correlation
-    undefined. A flat score distribution is itself a calibration problem
-    worth flagging separately.
+    a flat score distribution means correlation is undefined, and
+    is itself a calibration problem worth investigating separately.
     """
     n = len(x)
 
@@ -111,25 +114,22 @@ def _pearson_r(x: list[float], y: list[float]) -> float:
     mean_x = sum(x) / n
     mean_y = sum(y) / n
 
-    # Deviations from mean for each sample
     dev_x = [xi - mean_x for xi in x]
     dev_y = [yi - mean_y for yi in y]
 
-    # Numerator: sum of products of deviations
     numerator = sum(dx * dy for dx, dy in zip(dev_x, dev_y))
 
-    # Denominator: product of standard deviations
     sum_sq_x = sum(dx ** 2 for dx in dev_x)
     sum_sq_y = sum(dy ** 2 for dy in dev_y)
     denominator = math.sqrt(sum_sq_x * sum_sq_y)
 
     if denominator == 0.0:
-        # Both lists are constant — correlation is undefined.
-        # Return 0.0 and let the threshold check flag it.
+        # Both lists are constant — the AI is outputting the same score
+        # for every essay, which means the rubric prompt is not working.
         logger.warning(
-            "Denominator is zero in Pearson computation — "
-            "one or both score distributions are constant. "
-            "This usually means the AI is outputting the same score for everything."
+            "Pearson denominator is zero — score distribution is flat. "
+            "The AI may be outputting identical scores for all essays. "
+            "Inspect raw_response in calibration_ai_scores for clues."
         )
         return 0.0
 
@@ -142,31 +142,28 @@ async def fetch_score_pairs(
 ) -> dict[str, tuple[list[float], list[float]]]:
     """
     Fetches paired AI and human consensus scores for every essay
-    that was scored in this run.
+    scored in this run.
 
-    'Consensus' means the average of two agreeing human graders.
+    Consensus = average of the two non-adjudicating human graders.
     Essays where graders disagreed by more than 1.0 band were sent
-    to an adjudicating examiner — we use the adjudicator's score.
+    to an adjudicating examiner — that score has is_adjudicating = TRUE
+    and is handled separately in the consensus computation.
 
-    Returns a dict keyed by rubric category, value is (ai_scores, human_scores).
-    Both lists are in the same order so index i in ai_scores pairs with
-    index i in human_scores.
+    Returns a dict keyed by rubric category.
+    Value is (ai_scores, human_scores) — parallel lists, same order.
+    Index i in ai_scores pairs with index i in human_scores.
     """
     rows = await conn.fetch(
         """
         SELECT
-            ai.essay_id,
+            ai.essay_id::text,
 
-            -- AI scores for this run
             ai.score_task_response       AS ai_task_response,
             ai.score_coherence_cohesion  AS ai_coherence_cohesion,
             ai.score_lexical_resource    AS ai_lexical_resource,
             ai.score_grammatical_range   AS ai_grammatical_range,
             ai.score_overall             AS ai_overall,
 
-            -- Human consensus: average of the two non-adjudicating graders
-            -- If they disagreed by > 1.0 band, the adjudicator's score
-            -- was recorded as a separate row with is_adjudicating = TRUE
             AVG(CASE WHEN hs.is_adjudicating = FALSE
                 THEN hs.score_task_response END)      AS human_task_response,
             AVG(CASE WHEN hs.is_adjudicating = FALSE
@@ -182,9 +179,7 @@ async def fetch_score_pairs(
         JOIN linguamentor.calibration_human_scores hs
             ON hs.essay_id = ai.essay_id
         WHERE
-            ai.run_id = $1::uuid
-            -- Only include essays with at least 2 human scores
-            -- Single-grader essays don't meet the calibration brief standard
+            ai.run_id = $1
         GROUP BY
             ai.essay_id,
             ai.score_task_response,
@@ -197,7 +192,7 @@ async def fetch_score_pairs(
         ORDER BY
             ai.essay_id
         """,
-        run_id,
+        uuid_module.UUID(run_id),   # native UUID — no ::uuid cast in SQL
     )
 
     if not rows:
@@ -207,7 +202,6 @@ async def fetch_score_pairs(
             f"before running correlation."
         )
 
-    # Unpack rows into parallel lists per category
     categories = {
         "task_response":      ([], []),
         "coherence_cohesion": ([], []),
@@ -217,12 +211,12 @@ async def fetch_score_pairs(
     }
 
     for row in rows:
-        # Skip any essay where human consensus is NULL —
-        # means graders disagreed and no adjudicator resolved it yet
+        # Skip essays where human consensus is still incomplete —
+        # means graders disagreed and no adjudicator has resolved it yet
         if any(row[f"human_{cat}"] is None for cat in categories):
             logger.warning(
-                f"Skipping essay {str(row['essay_id'])[:8]}... — "
-                f"human consensus incomplete"
+                f"Skipping essay {row['essay_id'][:8]}... — "
+                f"human consensus incomplete (adjudication pending)"
             )
             continue
 
@@ -233,8 +227,8 @@ async def fetch_score_pairs(
 
     n_complete = len(categories["overall"][0])
     logger.info(
-        f"Fetched {len(rows)} score pairs, "
-        f"{n_complete} with complete human consensus"
+        f"Score pairs ready for correlation: "
+        f"{len(rows)} fetched, {n_complete} with complete human consensus"
     )
 
     return categories
@@ -245,13 +239,11 @@ async def compute_correlation(
     run_id: str,
 ) -> CorrelationReport:
     """
-    Computes Pearson correlation for all rubric categories in this run.
-
-    Writes results back to calibration_runs so the Go/No-Go gate
-    and the dashboard always have the latest numbers.
+    Computes Pearson correlation for all rubric categories in this run
+    and writes results back to calibration_runs.
 
     Returns a CorrelationReport with pass/fail verdict per category
-    and an overall pass/fail for the run.
+    and the overall pass/fail for the Go/No-Go gate.
     """
     logger.info(f"Computing Pearson correlation for run {run_id[:8]}...")
 
@@ -267,14 +259,13 @@ async def compute_correlation(
             passed=(r >= PEARSON_THRESHOLD),
         )
 
-    # Compute per category
-    task_response      = _compute_category("Task Response",          "task_response")
-    coherence_cohesion = _compute_category("Coherence & Cohesion",   "coherence_cohesion")
-    lexical_resource   = _compute_category("Lexical Resource",       "lexical_resource")
-    grammatical_range  = _compute_category("Grammatical Range",      "grammatical_range")
-    overall_score      = _compute_category("Overall Band",           "overall")
+    task_response      = _compute_category("Task Response",        "task_response")
+    coherence_cohesion = _compute_category("Coherence & Cohesion", "coherence_cohesion")
+    lexical_resource   = _compute_category("Lexical Resource",     "lexical_resource")
+    grammatical_range  = _compute_category("Grammatical Range",    "grammatical_range")
+    overall_score      = _compute_category("Overall Band",         "overall")
 
-    # All five must pass — one weak category is enough to block launch
+    # All five must pass — one weak category blocks launch
     passed_overall = all([
         task_response.passed,
         coherence_cohesion.passed,
@@ -283,8 +274,7 @@ async def compute_correlation(
         overall_score.passed,
     ])
 
-    # Write results to calibration_runs — this is what the Go/No-Go
-    # gate checks and what gets stored in calibration_baseline on pass
+    # Persist results — the Go/No-Go gate and dashboard read from here
     await conn.execute(
         """
         UPDATE linguamentor.calibration_runs SET
@@ -294,7 +284,7 @@ async def compute_correlation(
             pearson_grammatical_range   = $4,
             pearson_overall             = $5,
             passed_threshold            = $6
-        WHERE id = $7::uuid
+        WHERE id = $7
         """,
         task_response.pearson_r,
         coherence_cohesion.pearson_r,
@@ -302,7 +292,7 @@ async def compute_correlation(
         grammatical_range.pearson_r,
         overall_score.pearson_r,
         passed_overall,
-        run_id,
+        uuid_module.UUID(run_id),   # native UUID
     )
 
     report = CorrelationReport(
@@ -315,10 +305,7 @@ async def compute_correlation(
         passed_overall=passed_overall,
     )
 
-    # Log the full report — this is what the developer reads to decide
-    # whether to ship or go back to rubric tuning
     logger.info(report.summary())
-
     return report
 
 
@@ -331,12 +318,10 @@ async def store_calibration_baseline(
     """
     Writes the immutable calibration baseline record.
 
-    Only called when passed_overall is True and the product lead
-    has signed off on the Go/No-Go decision.
-
-    The calibration_version 'v1.0-launch' stored here is referenced
-    in every AIModelRun in production — it's the anchor of the
-    scoring transparency promise shown on every user score report.
+    Only callable when passed_overall is True and the product lead
+    has signed off. The calibration_version 'v1.0-launch' stored here
+    appears on every user score report in production — it is the anchor
+    of the scoring transparency promise shown to every learner.
     """
     if not report.passed_overall:
         raise ValueError(
@@ -344,14 +329,13 @@ async def store_calibration_baseline(
             "All categories must reach r >= 0.85 before baseline is recorded."
         )
 
-    # How many essays were in this run
     essays_count = await conn.fetchval(
         """
         SELECT essays_scored
         FROM linguamentor.calibration_runs
-        WHERE id = $1::uuid
+        WHERE id = $1
         """,
-        run_id,
+        uuid_module.UUID(run_id),
     )
 
     await conn.execute(
@@ -369,13 +353,12 @@ async def store_calibration_baseline(
             approved_by,
             approved_at
         ) VALUES (
-            uuid_generate_v4(), $1, $2::uuid,
-            $3, $4, $5, $6, $7,
-            $8, $9, NOW()
+            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW()
         )
         """,
-        "v1.0-launch",
-        run_id,
+        uuid_module.uuid4(),                        # id
+        "v1.0-launch",                              # calibration_version
+        uuid_module.UUID(run_id),                   # run_id — native UUID
         report.overall_score.pearson_r,
         report.task_response.pearson_r,
         report.coherence_cohesion.pearson_r,

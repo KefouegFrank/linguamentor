@@ -169,7 +169,7 @@ REQUIRED_OUTPUT_SCHEMA = {
         "score_coherence_cohesion": "<float 0.0-9.0 in 0.5 increments>",
         "score_lexical_resource": "<float 0.0-9.0 in 0.5 increments>",
         "score_grammatical_range": "<float 0.0-9.0 in 0.5 increments>",
-        "score_overall": "<weighted average of the four scores above>"
+        "score_overall": "<IELTS overall band — round the average of the four scores to the nearest 0.5 increment. Example: average 8.375 → round to 8.5>"
     },
     "rationale_task_response": "<minimum 2 sentences explaining this score>",
     "rationale_coherence_cohesion": "<minimum 2 sentences explaining this score>",
