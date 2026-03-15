@@ -35,4 +35,6 @@ Thumbs.db
 .idea/
 
 # WER validation audio samples — binary files, never commit
-data/wer_samples/
+data/wer_samples/**/*.mp3
+data/wer_samples/**/*.wav
+data/wer_samples/**/*.flac
