@@ -57,11 +57,36 @@ PROMPT_VARIANT_REGISTRY: dict[str, PromptVariant] = {
             "Achieved r=0.9338 overall on 24 essays across bands 4.5-8.0",
             "Task Response weakest at r=0.8921 — still above 0.85 threshold",
             "Band 8.5 tier incomplete due to Groq TPD exhaustion",
-            "Approved by TETSOPGUIM Frank — Go/No-Go PASSED",
+            "Pearson gate PASSED. MAE gate not yet implemented at time of run.",
+            "Post-hoc analysis: overall MAE=1.177 — systematic +1.1 band overscoring detected",
+            "Approved by TETSOPGUIM Frank — superseded by v1.1-bias-correction",
+        ]
+    ),
+
+    "v1.1-bias-correction": PromptVariant(
+        version_label="v1.1-bias-correction",
+        description=(
+            "Layer 4 bias correction. Added explicit anti-inflation anchors: "
+            "realistic band distribution reminder (most test-takers score 5.0-7.0), "
+            "lower-band-on-doubt rule, explicit prohibition on generosity rounding. "
+            "Layer 5 rubric descriptors unchanged."
+        ),
+        layer_modified=4,
+        change_rationale=(
+            "v1.0-launch post-hoc analysis showed AI scoring 1.0-1.4 bands above "
+            "human consensus across all categories (overall MAE=1.177). "
+            "Pearson gate passed (r=0.9338) confirming strong directional accuracy, "
+            "but systematic positive bias would mislead learners about their true band. "
+            "MAE gate added at threshold 0.5 — this version must pass both gates."
+        ),
+        notes=[
+            "Target: MAE ≤ 0.5 bands overall",
+            "Pearson must remain ≥ 0.85 — bias fix must not reduce correlation",
+            "Layer 4 modified only — rubric descriptors unchanged at Layer 5",
+            "Run after Groq TPD resets — includes Band 8.5 tier completion",
         ]
     ),
 }
-
 
 def get_variant_by_label(label: str) -> Optional[PromptVariant]:
     """Returns the prompt variant for a given version label."""

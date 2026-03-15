@@ -251,8 +251,15 @@ def build_evaluation_prompt(
     layer_4 = (
         f"TASK: Evaluate the essay below against the {rubric['exam']} "
         f"rubric. Score each category independently before computing the "
-        f"overall band score. Do not round scores to convenient numbers — "
-        f"award the score the essay has earned according to the descriptors."
+        f"overall band score.\n\n"
+        f"CRITICAL SCORING RULES:\n"
+        f"- Award the score the essay has EARNED, not the score that would "
+        f"encourage the writer. This is a formal examination, not feedback.\n"
+        f"- Most IELTS test-takers score between Band 5.0 and 7.0. "
+        f"Band 8.0+ requires near-native fluency and is rare.\n"
+        f"- If uncertain between two adjacent bands, award the LOWER band. "
+        f"Examiners require clear evidence to award higher bands.\n"
+        f"- Do not round scores upward to be generous."
         f"{calibration_note}"
     )
 
