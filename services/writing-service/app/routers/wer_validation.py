@@ -23,6 +23,7 @@ from app.calibration.wer_engine import (
     store_wer_baseline,
     WER_THRESHOLD,
 )
+from app.calibration.asr_pipeline import run_asr_pipeline
 from app.dependencies import get_db
 
 logger = logging.getLogger(__name__)
@@ -100,6 +101,34 @@ async def create_wer_run(
         ),
     }
 
+    
+@router.post(
+    "/runs/{run_id}/transcribe",
+    summary="Run ASR pipeline — transcribe all pending audio samples",
+)
+async def run_transcription_pipeline(
+    run_id: str,
+    conn: asyncpg.Connection = Depends(get_db),
+) -> dict:
+    """
+    Transcribes all pending audio samples for this run using
+    Groq Whisper Large v3. Call after creating a run and before
+    calling /compute to get WER results.
+    """
+    # Fetch accent targets for this run
+    run = await conn.fetchrow(
+        "SELECT accent_targets FROM linguamentor.wer_validation_runs WHERE id = $1",
+        uuid_module.UUID(run_id),
+    )
+    if not run:
+        return {"error": f"Run {run_id} not found"}
+
+    summary = await run_asr_pipeline(
+        conn=conn,
+        run_id=run_id,
+        accent_targets=list(run["accent_targets"]),
+    )
+    return summary
 
 @router.post(
     "/runs/{run_id}/results",
