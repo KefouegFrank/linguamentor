@@ -14,12 +14,14 @@ from typing import AsyncGenerator
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.routers import calibration
 
 from app.config import get_settings
 from app.dependencies import set_postgres_pool, set_redis_client
 from app.exceptions import register_exception_handlers
+
 from app.routers import health
+from app.routers import wer_validation
+from app.routers import calibration
 
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -122,6 +124,8 @@ def create_app() -> FastAPI:
     app.include_router(health.router)
     
     app.include_router(calibration.router)
+    
+    app.include_router(wer_validation.router)
 
     return app
 
