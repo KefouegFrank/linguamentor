@@ -212,7 +212,23 @@ class GroqProvider(AIProviderBase):
 
         except Exception as e:
             latency_ms = int((time.monotonic() - start) * 1000)
-            logger.error(f"Groq call failed after {latency_ms}ms: {e}")
+            error_str = str(e)
+
+            # Detect daily token limit (TPD) exhaustion specifically.
+            # This is a hard stop — no retry, no backoff will help.
+            # The limit resets at midnight UTC. Logging as CRITICAL
+            # so it stands out immediately in any monitoring system.
+            if "tokens per day" in error_str or "TPD" in error_str:
+                logger.critical(
+                    f"🚨 Groq daily token limit (TPD) exhausted. "
+                    f"No further essays can be scored until the limit "
+                    f"resets at midnight UTC. Re-run this calibration "
+                    f"run tomorrow — the pipeline will resume from where "
+                    f"it stopped, skipping already-scored essays automatically."
+                )
+            else:
+                logger.error(f"Groq call failed after {latency_ms}ms: {e}")
+
             raise
 
     def _parse_response(self, raw: str) -> AIEvaluationResponse:

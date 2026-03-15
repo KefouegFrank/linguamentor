@@ -1,6 +1,4 @@
 """
-app/main.py
-
 Entry point for the writing service.
 
 The lifespan function handles startup and shutdown — database pools,
@@ -22,6 +20,11 @@ from app.config import get_settings
 from app.dependencies import set_postgres_pool, set_redis_client
 from app.exceptions import register_exception_handlers
 from app.routers import health
+
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("groq").setLevel(logging.WARNING)
+logging.getLogger("openai").setLevel(logging.WARNING)
 
 
 # Configure before anything else so early startup errors are captured.
