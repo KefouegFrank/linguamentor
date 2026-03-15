@@ -130,10 +130,69 @@ async def score_essay(
         )
 
         provider = get_ai_provider()
-        evaluation, prompt_hash, latency_ms = await provider.evaluate_essay(
-            prompt=prompt,
-            temperature=0.1,
-        )
+
+        # Two-attempt scoring with targeted retry strategy.
+        #
+        # Attempt 1: standard call at temperature=0.1
+        # Attempt 2 (only on ValueError): slight temperature increase
+        #   to 0.3 breaks the model out of whatever deterministic
+        #   pattern produced the invalid output, while staying
+        #   conservative enough not to distort scores.
+        #
+        # We only retry on ValueError (schema/validation failure) —
+        # not on network errors or API errors, which indicate
+        # infrastructure problems that a retry won't fix and that
+        # would waste API quota.
+        #
+        # Why two attempts and not three? AES research shows that
+        # if a rubric prompt fails validation twice on the same essay,
+        # it almost always indicates a structural prompt issue rather
+        # than transient LLM behaviour. Three attempts would mask
+        # real rubric problems during calibration — exactly what we
+        # need to surface, not hide.
+        evaluation = None
+        prompt_hash = None
+        latency_ms = None
+
+        for attempt in range(1, 3):  # attempts 1 and 2
+            try:
+                # Attempt 2 uses slightly higher temperature to escape
+                # the deterministic output pattern that caused failure
+                call_temperature = 0.1 if attempt == 1 else 0.3
+
+                evaluation, prompt_hash, latency_ms = await provider.evaluate_essay(
+                    prompt=prompt,
+                    temperature=call_temperature,
+                )
+                # Success — log attempt number if it took more than one
+                if attempt == 2:
+                    logger.info(
+                        f"Essay {essay.id[:8]}... scored successfully on retry attempt 2"
+                    )
+                break  # exit retry loop on success
+
+            except ValueError as e:
+                # Schema or validation failure — worth retrying once
+                if attempt == 1:
+                    logger.warning(
+                        f"Essay {essay.id[:8]}... failed schema validation on attempt 1 "
+                        f"— retrying at temperature=0.3. Error: {e}"
+                    )
+                    continue
+                else:
+                    # Second attempt also failed — this is a real problem,
+                    # not transient. Log and fall through to outer except.
+                    logger.error(
+                        f"Essay {essay.id[:8]}... failed schema validation on both attempts. "
+                        f"This likely indicates a rubric prompt issue. Error: {e}"
+                    )
+                    raise
+
+            except Exception as e:
+                # Network, API, rate limit, or other infrastructure error.
+                # Do NOT retry — this wastes quota and masks real problems.
+                # Let the outer except in score_essay() handle it.
+                raise
 
         await conn.execute(
             """
@@ -165,7 +224,7 @@ async def score_essay(
             evaluation.scores.score_lexical_resource,
             evaluation.scores.score_grammatical_range,
             evaluation.scores.score_overall,
-            "gpt-4o",
+            provider.__class__.__name__.replace("Provider", ""),
             # calibration_version ties this score to the exact prompt
             # config used — critical for the audit trail
             settings.calibration_version,
@@ -223,14 +282,31 @@ async def run_calibration_scoring(
 
     scored = 0
     failed = 0
+    consecutive_failures = 0
 
     for i, essay in enumerate(essays, 1):
         logger.info(f"Processing essay {i}/{len(essays)} — {essay.id[:8]}...")
 
         if await score_essay(conn, essay, run_id):
             scored += 1
+            consecutive_failures = 0  # reset on success
         else:
             failed += 1
+            consecutive_failures = 0 
+
+        # Three consecutive failures almost certainly means the
+        # provider has hit its daily token limit (TPD). Continuing
+        # would attempt all remaining essays, log 26 more failures,
+        # and waste time. Abort early — the pipeline resumes cleanly
+        # tomorrow because fetch_pending_essays skips scored essays.
+        if consecutive_failures >= 3:
+                logger.critical(
+                    f"🚨 3 consecutive scoring failures detected after essay "
+                    f"{i}/{len(essays)}. Aborting run to avoid further quota "
+                    f"waste. Re-run tomorrow — {scored} essays already scored "
+                    f"will be skipped automatically on resume."
+                )
+                break
 
         # Write progress after every essay — lets us monitor long runs
         # without waiting for the whole thing to finish

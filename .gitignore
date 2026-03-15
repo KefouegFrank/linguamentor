@@ -33,3 +33,6 @@ Thumbs.db
 # IDE
 .vscode/
 .idea/
+
+# WER validation audio samples — binary files, never commit
+data/wer_samples/

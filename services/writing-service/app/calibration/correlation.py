@@ -26,6 +26,11 @@ logger = logging.getLogger(__name__)
 # The gate. Every category and overall must clear this.
 # Defined once here — referenced everywhere else.
 PEARSON_THRESHOLD = 0.85
+# Maximum acceptable mean absolute error between AI and human scores.
+# 0.5 bands = one half-band increment — the smallest meaningful IELTS
+# difference. If the AI is consistently more than 0.5 bands off on
+# average, the scores are misleading regardless of correlation strength.
+MAE_THRESHOLD = 0.5
 
 
 @dataclass
@@ -233,17 +238,21 @@ async def fetch_score_pairs(
 
     return categories
 
-
 async def compute_correlation(
     conn: asyncpg.Connection,
     run_id: str,
 ) -> CorrelationReport:
     """
-    Computes Pearson correlation for all rubric categories in this run
-    and writes results back to calibration_runs.
+    Computes Pearson correlation AND Mean Absolute Error for all rubric
+    categories in this run, then writes results back to calibration_runs.
 
-    Returns a CorrelationReport with pass/fail verdict per category
-    and the overall pass/fail for the Go/No-Go gate.
+    Two gates must both pass for passed_overall to be True:
+    1. Pearson gate: r >= 0.85 for all five categories
+    2. MAE gate: overall MAE <= 0.5 bands
+
+    Pearson alone is insufficient — a model can have strong directional
+    correlation while scoring systematically 1+ bands too high or low.
+    The MAE gate catches this systematic bias before it reaches learners.
     """
     logger.info(f"Computing Pearson correlation for run {run_id[:8]}...")
 
@@ -265,8 +274,9 @@ async def compute_correlation(
     grammatical_range  = _compute_category("Grammatical Range",    "grammatical_range")
     overall_score      = _compute_category("Overall Band",         "overall")
 
-    # All five must pass — one weak category blocks launch
-    passed_overall = all([
+    # ── Gate 1: Pearson ───────────────────────────────────────────
+    # All five categories must reach r >= 0.85
+    pearson_passed = all([
         task_response.passed,
         coherence_cohesion.passed,
         lexical_resource.passed,
@@ -274,7 +284,42 @@ async def compute_correlation(
         overall_score.passed,
     ])
 
-    # Persist results — the Go/No-Go gate and dashboard read from here
+    # ── Gate 2: MAE ───────────────────────────────────────────────
+    # AI must be within 0.5 bands of human consensus on average.
+    # Computed on overall band scores — the number learners see.
+    overall_ai, overall_human = score_pairs["overall"]
+    n_overall   = len(overall_ai)
+    overall_mae = sum(
+        abs(a - b) for a, b in zip(overall_ai, overall_human)
+    ) / n_overall
+    overall_mae = round(overall_mae, 3)
+    mae_passed  = overall_mae <= MAE_THRESHOLD
+
+    # ── Combined verdict ──────────────────────────────────────────
+    passed_overall = pearson_passed and mae_passed
+
+    # Log specific failure reason so the developer knows exactly what to fix
+    if pearson_passed and not mae_passed:
+        logger.warning(
+            f"⚠️  Pearson gate PASSED but MAE gate FAILED. "
+            f"Overall MAE={overall_mae:.3f} bands exceeds threshold of {MAE_THRESHOLD}. "
+            f"The AI has strong directional accuracy but is scoring "
+            f"{overall_mae:.2f} bands off on average — this will mislead learners. "
+            f"Apply Layer 4 bias correction and re-run calibration."
+        )
+    elif not pearson_passed and mae_passed:
+        logger.warning(
+            f"⚠️  MAE gate PASSED but Pearson gate FAILED. "
+            f"Scores are close to human consensus but not moving in the "
+            f"same direction consistently. Review outlier essays."
+        )
+    elif not pearson_passed and not mae_passed:
+        logger.warning(
+            f"❌ Both gates FAILED. MAE={overall_mae:.3f}, "
+            f"check individual category Pearson values above."
+        )
+
+    # ── Persist results ───────────────────────────────────────────
     await conn.execute(
         """
         UPDATE linguamentor.calibration_runs SET
@@ -283,8 +328,9 @@ async def compute_correlation(
             pearson_lexical_resource    = $3,
             pearson_grammatical_range   = $4,
             pearson_overall             = $5,
-            passed_threshold            = $6
-        WHERE id = $7
+            passed_threshold            = $6,
+            notes = COALESCE(notes, '') || $7
+        WHERE id = $8
         """,
         task_response.pearson_r,
         coherence_cohesion.pearson_r,
@@ -292,7 +338,8 @@ async def compute_correlation(
         grammatical_range.pearson_r,
         overall_score.pearson_r,
         passed_overall,
-        uuid_module.UUID(run_id),   # native UUID
+        f" | MAE={overall_mae:.3f} | MAE_passed={mae_passed} | Pearson_passed={pearson_passed}",
+        uuid_module.UUID(run_id),
     )
 
     report = CorrelationReport(
@@ -305,9 +352,15 @@ async def compute_correlation(
         passed_overall=passed_overall,
     )
 
-    logger.info(report.summary())
-    return report
+    # Append MAE to the summary log
+    summary = report.summary()
+    mae_line = (
+        f"\n  MAE (overall): {overall_mae:.3f} bands "
+        f"({'✅ PASS' if mae_passed else '❌ FAIL'} — threshold: {MAE_THRESHOLD})"
+    )
+    logger.info(summary + mae_line)
 
+    return report
 
 async def store_calibration_baseline(
     conn: asyncpg.Connection,

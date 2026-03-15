@@ -212,7 +212,23 @@ class GroqProvider(AIProviderBase):
 
         except Exception as e:
             latency_ms = int((time.monotonic() - start) * 1000)
-            logger.error(f"Groq call failed after {latency_ms}ms: {e}")
+            error_str = str(e)
+
+            # Detect daily token limit (TPD) exhaustion specifically.
+            # This is a hard stop — no retry, no backoff will help.
+            # The limit resets at midnight UTC. Logging as CRITICAL
+            # so it stands out immediately in any monitoring system.
+            if "tokens per day" in error_str or "TPD" in error_str:
+                logger.critical(
+                    f"🚨 Groq daily token limit (TPD) exhausted. "
+                    f"No further essays can be scored until the limit "
+                    f"resets at midnight UTC. Re-run this calibration "
+                    f"run tomorrow — the pipeline will resume from where "
+                    f"it stopped, skipping already-scored essays automatically."
+                )
+            else:
+                logger.error(f"Groq call failed after {latency_ms}ms: {e}")
+
             raise
 
     def _parse_response(self, raw: str) -> AIEvaluationResponse:
@@ -232,6 +248,88 @@ class GroqProvider(AIProviderBase):
                 f"Groq response failed schema validation: {e}\n"
                 f"Raw (first 500 chars): {raw[:500]}"
             )
+       
+class GroqASRProvider:
+    """
+    Groq Whisper Large v3 — ASR provider for Phase 0 WER validation.
+
+    Chosen for Phase 0 because:
+    - Already integrated (no new SDK or credentials needed)
+    - Achieves ~8.4% WER on accented speech — clears the 10% threshold
+    - Superior French language performance (fr-FR, fr-CA)
+    - 189x real-time speed factor — fast enough for batch validation
+
+    Production ASR will use gpt-4o-transcribe per PRD section 19.3.
+    This validates that a Whisper-class model meets threshold, which
+    confirms the more accurate production model will also pass.
+    """
+
+    def __init__(self):
+        from groq import Groq
+        settings = get_settings()
+
+        if not settings.groq_api_key:
+            raise ValueError(
+                "groq_api_key not set — check LM_GROQ_API_KEY in .env. "
+                "Required for ASR validation pipeline."
+            )
+
+        # Use synchronous client — audio files are read from disk,
+        # not streamed from a live connection
+        self._client = Groq(api_key=settings.groq_api_key)
+        self._model  = "whisper-large-v3"
+
+    def transcribe(
+        self,
+        audio_path: str,
+        language: str = None,
+        prompt: str = None,
+    ) -> tuple[str, float]:
+        """
+        Transcribes an audio file using Whisper Large v3.
+
+        Args:
+            audio_path: Path to audio file (WAV, MP3, M4A, FLAC)
+            language:   ISO 639-1 code — 'en' or 'fr'
+                        Providing this improves accuracy and speed
+            prompt:     Optional context hint — e.g. exam topic
+
+        Returns:
+            tuple of (transcript_text, no_speech_probability)
+            no_speech_prob > 0.9 indicates likely silence/noise
+        """
+        import time
+
+        with open(audio_path, "rb") as audio_file:
+            response = self._client.audio.transcriptions.create(
+                file=audio_file,
+                model=self._model,
+                language=language,
+                prompt=prompt,
+                response_format="verbose_json",
+                temperature=0.0,  # deterministic — same audio = same transcript
+            )
+
+        # Extract transcript and no-speech probability from segments
+        transcript = response.text.strip()
+
+        # Compute average no_speech_prob across segments as quality indicator
+        segments = getattr(response, "segments", [])
+        if segments:
+            avg_no_speech = sum(
+                s.get("no_speech_prob", 0) for s in segments
+            ) / len(segments)
+        else:
+            avg_no_speech = 0.0
+
+        logger.debug(
+            f"Transcribed {audio_path} | "
+            f"words={len(transcript.split())} | "
+            f"no_speech_prob={avg_no_speech:.3f}"
+        )
+
+        return transcript, avg_no_speech
+    
             
 class GeminiProvider(AIProviderBase):
     """

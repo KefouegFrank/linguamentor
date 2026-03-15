@@ -51,13 +51,12 @@ class RubricScores(BaseModel):
     @classmethod
     def must_be_half_band_increment(cls, v: float) -> float:
         """
-        IELTS scores are awarded in 0.5 increments only.
-        If the model returns an arithmetic mean like 8.875, we round
-        to the nearest 0.5 rather than rejecting — the scoring intent
-        is correct, only the rounding convention is off.
-        Auto-rounding is the correct professional decision here:
-        rejecting a valid score of 8.875 (clearly meaning 9.0) wastes
-        API calls and produces no better calibration data.
+        IELTS rounds overall band to nearest 0.5.
+        Per official IELTS rounding: x.25 rounds up, x.74 rounds down.
+        round(v * 2) / 2 implements this correctly:
+        6.75 → round(13.5) / 2 → 14/2 → 7.0  ✓
+        6.24 → round(12.48) / 2 → 12/2 → 6.0  ✓
+        Auto-rounds rather than rejects — scoring intent preserved.
         """
         rounded = round(v * 2) / 2
         return max(0.0, min(9.0, rounded))

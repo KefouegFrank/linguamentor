@@ -23,6 +23,8 @@ from app.calibration.correlation import (
     PEARSON_THRESHOLD,
 )
 
+from app.calibration.tuning_analysis import analyse_run
+
 from app.dependencies import get_db
 
 logger = logging.getLogger(__name__)
@@ -210,4 +212,42 @@ async def store_baseline(
         "calibration_version": version,
         "approved_by": request.approved_by,
         "status": "baseline stored — Go/No-Go complete",
+    }
+
+@router.get(
+    "/runs/{run_id}/analysis",
+    summary="Diagnose a calibration run — identify tuning targets",
+)
+async def get_tuning_analysis(
+    run_id: str,
+    conn: asyncpg.Connection = Depends(get_db),
+) -> dict:
+    """
+    Produces a diagnostic report for a calibration run.
+
+    Use this after any run — passing or failing — to understand
+    where AI-human divergence is highest and what to adjust.
+    Especially useful when a run fails the 0.85 threshold.
+    """
+    report = await analyse_run(conn, run_id)
+
+    return {
+        "run_id": report.run_id,
+        "primary_issue": report.primary_issue,
+        "recommended_layer": report.recommended_layer,
+        "recommended_action": report.recommended_action,
+        "categories": [
+            {
+                "category":             c.category,
+                "pearson_r":            c.pearson_r,
+                "mean_ai_score":        c.mean_ai_score,
+                "mean_human_score":     c.mean_human_score,
+                "mean_absolute_error":  c.mean_absolute_error,
+                "bias":                 c.bias,
+                "passed":               c.passed,
+                "tuning_guidance":      c.tuning_guidance,
+                "outlier_count":        len(c.outlier_essays),
+            }
+            for c in report.categories
+        ],
     }
