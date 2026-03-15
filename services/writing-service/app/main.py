@@ -20,9 +20,13 @@ from app.dependencies import set_postgres_pool, set_redis_client
 from app.exceptions import register_exception_handlers
 
 from app.routers import health
-from app.routers import wer_validation
 from app.routers import calibration
+from app.routers import wer_validation
+from app.auth.router import router as auth_router, user_router
 
+
+# Suppress noisy HTTP client debug logs — we don't need to see every
+# request the AI provider SDKs make internally
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("groq").setLevel(logging.WARNING)
@@ -120,12 +124,18 @@ def create_app() -> FastAPI:
 
     # Register routers
     # Each router handles a domain — health, evaluation, appeals, etc.
-    # prefix="" means /health and /ready are at the root, not /health/health
+    
+    # Infrastructure endpoints — no auth required
     app.include_router(health.router)
     
+    # Phase 0 calibration and WER endpoints
     app.include_router(calibration.router)
-    
     app.include_router(wer_validation.router)
+    
+    # Phase 1 auth endpoints — register and user_router separately
+    # because they have different prefixes (/api/v1/auth vs /api/v1/user)
+    app.include_router(auth_router)
+    app.include_router(user_router)
 
     return app
 

@@ -12,11 +12,18 @@ import asyncpg
 import redis.asyncio as aioredis
 from fastapi import Depends
 
+from fastapi import HTTPException
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+
+from app.auth.security import decode_access_token, is_token_blacklisted
+
+
 # These module-level variables hold the pool/client created at startup.
 # They're set by the lifespan function in main.py and read here.
 # None until the app starts — routes should never be called before startup.
 _postgres_pool: asyncpg.Pool | None = None
 _redis_client: aioredis.Redis | None = None
+_bearer_scheme = HTTPBearer()
 
 
 def set_postgres_pool(pool: asyncpg.Pool) -> None:
@@ -68,3 +75,53 @@ async def get_redis() -> aioredis.Redis:
     if _redis_client is None:
         raise RuntimeError("Redis client not initialised — check app lifespan")
     return _redis_client
+
+
+async def get_current_user(
+    credentials: HTTPAuthorizationCredentials = Depends(_bearer_scheme),
+    redis: aioredis.Redis = Depends(get_redis),
+) -> dict:
+    """
+    FastAPI dependency that validates the JWT and returns the current user.
+
+    Usage in a protected route:
+        @router.get("/protected")
+        async def protected(user: dict = Depends(get_current_user)):
+            return {"user_id": user["sub"]}
+
+    The API Gateway verifies tokens before forwarding to this service.
+    This dependency is a defence-in-depth check inside the service.
+    Raises 401 if token is missing, invalid, expired, or blacklisted.
+    """
+    token = credentials.credentials
+
+    # Check blacklist first — fast Redis lookup before expensive JWT decode
+    if await is_token_blacklisted(token, redis):
+        raise HTTPException(status_code=401, detail="Token has been revoked")
+
+    try:
+        payload = decode_access_token(token)
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+
+    return payload
+
+
+async def require_pro(
+    user: dict = Depends(get_current_user),
+) -> dict:
+    """
+    Dependency that requires Pro subscription tier.
+    Use on Pro-gated endpoints (PRD §5.1).
+
+    Usage:
+        @router.post("/exam/start")
+        async def start_exam(user: dict = Depends(require_pro)):
+            ...
+    """
+    if user.get("tier") != "pro":
+        raise HTTPException(
+            status_code=403,
+            detail="This feature requires a Pro subscription",
+        )
+    return user
