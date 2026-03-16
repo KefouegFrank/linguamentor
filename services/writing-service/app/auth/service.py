@@ -3,7 +3,7 @@ app/auth/service.py
 
 Auth business logic — all database operations for the auth system.
 
-Kept separate from the router so the logic is testable in isolation.
+Kept separate from the router so logic is testable in isolation.
 The router handles HTTP concerns (cookies, headers, status codes).
 This module handles only data and business rules.
 
@@ -25,6 +25,15 @@ from app.auth.security import (
 from app.config import get_settings
 from app.exceptions import NotFoundError, UnauthorizedError, ValidationError
 
+# ---------------------------------------------------------------------------
+# Lockout constants
+# ---------------------------------------------------------------------------
+# 5 failed attempts triggers a 15-minute lockout.
+# Balances security against user frustration — exam prep users
+# often access the platform under stress and may mistype passwords.
+_MAX_FAILED_ATTEMPTS = 5
+_LOCKOUT_MINUTES = 15
+
 
 async def register_user(
     data: RegisterRequest,
@@ -43,7 +52,6 @@ async def register_user(
     Returns the created user dict.
     Raises ValidationError if email is already registered.
     """
-    # Check for duplicate email — case-insensitive
     existing = await conn.fetchval(
         """
         SELECT id FROM linguamentor.users
@@ -57,7 +65,6 @@ async def register_user(
     user_id = uuid.uuid4()
     password_hash = hash_password(data.password)
 
-    # Insert user — single transaction covers all three inserts
     async with conn.transaction():
         await conn.execute(
             """
@@ -66,13 +73,12 @@ async def register_user(
             VALUES ($1, $2, $3, $4, 'learner', 'free')
             """,
             user_id,
-            data.email.lower(),    # normalize to lowercase
+            data.email.lower(),
             data.display_name,
             password_hash,
         )
 
-        # Learner profile — created immediately on registration.
-        # Defaults match PRD §14.1: fluency track, companion persona, en-US accent.
+        # Learner profile — defaults per PRD §14.1
         await conn.execute(
             """
             INSERT INTO linguamentor.learner_profiles
@@ -99,6 +105,7 @@ async def register_user(
         "display_name": data.display_name,
         "role": "learner",
         "subscription_tier": "free",
+        "email_verified": False,
     }
 
 
@@ -108,30 +115,59 @@ async def authenticate_user(
     conn: asyncpg.Connection,
 ) -> dict:
     """
-    Verifies email and password, returns the user dict on success.
+    Verifies email and password. Returns user dict on success.
 
-    Timing-safe: we always run verify_password even if the user
-    doesn't exist, to prevent timing attacks that could enumerate
-    registered emails.
+    Security properties:
+    - Timing-safe: verify_password always runs even if user doesn't exist
+    - Account lockout: 5 failed attempts → 15-minute lockout
+    - Failed counter resets on successful login
+    - Never reveals whether the email exists
 
-    Raises UnauthorizedError on any failure — never reveals whether
-    the email exists or not.
+    Raises UnauthorizedError on any failure.
+    Raises a special lockout error with retry_after when account is locked.
     """
     row = await conn.fetchrow(
         """
-        SELECT id, email, display_name, password_hash, role, subscription_tier
+        SELECT id, email, display_name, password_hash, role,
+               subscription_tier, email_verified, mfa_enabled,
+               failed_login_attempts, locked_until
         FROM linguamentor.users
         WHERE lower(email) = lower($1) AND deleted_at IS NULL
         """,
         email,
     )
 
-    # Run verify_password even if row is None — constant time
-    stored_hash = row["password_hash"] if row else "$argon2id$v=19$m=65536,t=3,p=4$placeholder"
+    # Run verify_password even if row is None — prevents timing attacks
+    # that could enumerate registered emails by measuring response time
+    stored_hash = row["password_hash"] if row else "$argon2id$v=19$m=65536,t=3,p=4$placeholder$placeholder"
     password_valid = verify_password(password, stored_hash)
 
     if not row or not password_valid:
+        # Increment failure counter if the user exists
+        if row:
+            await _record_failed_login(str(row["id"]), conn)
         raise UnauthorizedError("Invalid email or password")
+
+    # Check lockout — must happen after password verification to
+    # avoid leaking that the account exists via different error messages
+    now = datetime.now(timezone.utc)
+    if row["locked_until"] and row["locked_until"] > now:
+        remaining = int((row["locked_until"] - now).total_seconds())
+        raise UnauthorizedError(
+            f"Account temporarily locked. Try again in {remaining // 60 + 1} minutes."
+        )
+
+    # Successful login — reset failure counter
+    await conn.execute(
+        """
+        UPDATE linguamentor.users
+        SET failed_login_attempts = 0,
+            locked_until = NULL,
+            updated_at = NOW()
+        WHERE id = $1
+        """,
+        row["id"],
+    )
 
     return {
         "id": str(row["id"]),
@@ -139,7 +175,41 @@ async def authenticate_user(
         "display_name": row["display_name"],
         "role": row["role"],
         "subscription_tier": row["subscription_tier"],
+        "email_verified": row["email_verified"],
+        "mfa_enabled": row["mfa_enabled"],
     }
+
+
+async def _record_failed_login(user_id: str, conn: asyncpg.Connection) -> None:
+    """
+    Increments the failed login counter. Locks the account if
+    the threshold is reached.
+
+    Called internally — never exposed to callers directly.
+    """
+    new_attempts = await conn.fetchval(
+        """
+        UPDATE linguamentor.users
+        SET failed_login_attempts = failed_login_attempts + 1,
+            updated_at = NOW()
+        WHERE id = $1
+        RETURNING failed_login_attempts
+        """,
+        uuid.UUID(user_id),
+    )
+
+    # Apply lockout if threshold reached
+    if new_attempts >= _MAX_FAILED_ATTEMPTS:
+        locked_until = datetime.now(timezone.utc) + timedelta(minutes=_LOCKOUT_MINUTES)
+        await conn.execute(
+            """
+            UPDATE linguamentor.users
+            SET locked_until = $1, updated_at = NOW()
+            WHERE id = $2
+            """,
+            locked_until,
+            uuid.UUID(user_id),
+        )
 
 
 async def create_refresh_token_record(
@@ -149,14 +219,13 @@ async def create_refresh_token_record(
 ) -> str:
     """
     Generates a new refresh token and stores its hash in the DB.
-
     Returns the raw token (to be sent to client in HTTP-only cookie).
     The raw token is never stored — only its SHA-256 hash.
     """
     settings = get_settings()
     raw_token, token_hash = generate_refresh_token()
     expires_at = datetime.now(timezone.utc) + timedelta(
-        days=settings.lm_jwt_refresh_token_expire_days
+        days=settings.jwt_refresh_token_expire_days
     )
 
     await conn.execute(
@@ -181,17 +250,14 @@ async def rotate_refresh_token(
 ) -> tuple[str, dict]:
     """
     Implements refresh token rotation (PRD §37.1):
-    1. Look up the presented token by its hash
-    2. Verify it's not expired or revoked
+    1. Look up token by hash
+    2. Verify not expired or revoked
     3. Revoke it immediately
     4. Issue a new token
-    5. Return the new token and the associated user
+    5. Return (new_token, user_dict)
 
-    Returns (new_raw_token, user_dict).
-    Raises UnauthorizedError if token is invalid, expired, or revoked.
-
-    If a revoked token is presented, it may indicate token theft —
-    we revoke ALL tokens for the user as a safety measure.
+    Theft detection: if a revoked token is presented, revoke ALL
+    tokens for the user as a precaution.
     """
     token_hash = hash_refresh_token(raw_token)
     now = datetime.now(timezone.utc)
@@ -199,7 +265,7 @@ async def rotate_refresh_token(
     row = await conn.fetchrow(
         """
         SELECT rt.id, rt.user_id, rt.expires_at, rt.revoked_at, rt.device_label,
-               u.email, u.display_name, u.role, u.subscription_tier
+               u.email, u.display_name, u.role, u.subscription_tier, u.email_verified
         FROM linguamentor.refresh_tokens rt
         JOIN linguamentor.users u ON u.id = rt.user_id
         WHERE rt.token_hash = $1 AND u.deleted_at IS NULL
@@ -210,8 +276,7 @@ async def rotate_refresh_token(
     if not row:
         raise UnauthorizedError("Invalid refresh token")
 
-    # Token theft detection — if this token was already revoked,
-    # someone might be replaying it. Revoke all tokens for safety.
+    # Theft detection — revoked token reuse = possible replay attack
     if row["revoked_at"] is not None:
         await conn.execute(
             """
@@ -222,15 +287,15 @@ async def rotate_refresh_token(
             now,
             row["user_id"],
         )
-        raise UnauthorizedError("Refresh token has already been used — please log in again")
+        raise UnauthorizedError("Refresh token reuse detected — please log in again")
 
     if row["expires_at"] < now:
-        raise UnauthorizedError("Refresh token has expired — please log in again")
+        raise UnauthorizedError("Refresh token expired — please log in again")
 
     user_id = str(row["user_id"])
 
     async with conn.transaction():
-        # Revoke the used token immediately — rotation
+        # Revoke the used token
         await conn.execute(
             """
             UPDATE linguamentor.refresh_tokens
@@ -240,34 +305,24 @@ async def rotate_refresh_token(
             now,
             row["id"],
         )
-
-        # Issue a new token for the same device
         new_raw_token = await create_refresh_token_record(
             user_id=user_id,
             device_label=row["device_label"],
             conn=conn,
         )
 
-    user = {
+    return new_raw_token, {
         "id": user_id,
         "email": row["email"],
         "display_name": row["display_name"],
         "role": row["role"],
         "subscription_tier": row["subscription_tier"],
+        "email_verified": row["email_verified"],
     }
 
-    return new_raw_token, user
 
-
-async def revoke_refresh_token(
-    raw_token: str,
-    conn: asyncpg.Connection,
-) -> None:
-    """
-    Revokes a specific refresh token on logout.
-    Silent if the token doesn't exist — logout is always 'successful'
-    from the user's perspective.
-    """
+async def revoke_refresh_token(raw_token: str, conn: asyncpg.Connection) -> None:
+    """Revokes a specific refresh token on logout."""
     token_hash = hash_refresh_token(raw_token)
     await conn.execute(
         """
@@ -279,14 +334,8 @@ async def revoke_refresh_token(
     )
 
 
-async def revoke_all_user_tokens(
-    user_id: str,
-    conn: asyncpg.Connection,
-) -> None:
-    """
-    Revokes all refresh tokens for a user.
-    Called on password change and account deletion.
-    """
+async def revoke_all_user_tokens(user_id: str, conn: asyncpg.Connection) -> None:
+    """Revokes all refresh tokens for a user. Called on password change and GDPR erasure."""
     await conn.execute(
         """
         UPDATE linguamentor.refresh_tokens
@@ -297,27 +346,79 @@ async def revoke_all_user_tokens(
     )
 
 
-async def gdpr_erase_user(
+async def get_active_sessions(
     user_id: str,
     conn: asyncpg.Connection,
-) -> None:
+) -> list[dict]:
+    """
+    Returns all active (non-expired, non-revoked) refresh tokens
+    for a user. Used by GET /api/v1/user/sessions.
+
+    Raw token values are never returned — only session metadata.
+    """
+    rows = await conn.fetch(
+        """
+        SELECT id, device_label, created_at, last_used_at, expires_at
+        FROM linguamentor.refresh_tokens
+        WHERE user_id = $1
+          AND revoked_at IS NULL
+          AND expires_at > NOW()
+        ORDER BY created_at DESC
+        """,
+        uuid.UUID(user_id),
+    )
+    return [
+        {
+            "session_id": str(row["id"]),
+            "device_label": row["device_label"],
+            "created_at": row["created_at"],
+            "last_used_at": row["last_used_at"],
+            "expires_at": row["expires_at"],
+        }
+        for row in rows
+    ]
+
+
+async def revoke_session(
+    user_id: str,
+    session_id: str,
+    conn: asyncpg.Connection,
+) -> bool:
+    """
+    Revokes a specific session by its refresh token ID.
+    Verifies ownership — users can only revoke their own sessions.
+    Returns True if revoked, False if not found or already revoked.
+    """
+    result = await conn.execute(
+        """
+        UPDATE linguamentor.refresh_tokens
+        SET revoked_at = NOW()
+        WHERE id = $1
+          AND user_id = $2
+          AND revoked_at IS NULL
+        """,
+        uuid.UUID(session_id),
+        uuid.UUID(user_id),
+    )
+    # asyncpg returns 'UPDATE N' — N is the number of rows affected
+    return result == "UPDATE 1"
+
+
+async def gdpr_erase_user(user_id: str, conn: asyncpg.Connection) -> None:
     """
     GDPR right-to-erasure (PRD §10.5, DELETE /api/v1/user/me).
 
-    What we do:
-    - Anonymize PII in the users table (email → anonymized, display_name → NULL)
-    - Soft-delete the user (set deleted_at)
-    - Revoke all refresh tokens
-    - ai_model_runs rows keep their data but user_reference_id is cleared
-      (they're immutable audit records — PRD §52 says no delete permitted)
+    - Anonymizes PII in users table
+    - Soft-deletes the user
+    - Revokes all refresh tokens
+    - Clears user_reference_id from ai_model_runs (audit trail preserved)
 
-    Audio blob deletion is handled by a background job (not implemented here).
+    Audio blob deletion handled by background job.
     """
     uid = uuid.UUID(user_id)
     now = datetime.now(timezone.utc)
 
     async with conn.transaction():
-        # Anonymize PII — replace email with a non-reversible placeholder
         anonymized_email = f"deleted_{uid.hex[:12]}@anonymized.invalid"
         await conn.execute(
             """
@@ -325,6 +426,7 @@ async def gdpr_erase_user(
             SET email = $1,
                 display_name = NULL,
                 password_hash = 'DELETED',
+                mfa_totp_secret = NULL,
                 deleted_at = $2,
                 updated_at = $2
             WHERE id = $3
@@ -334,11 +436,9 @@ async def gdpr_erase_user(
             uid,
         )
 
-        # Revoke all tokens
         await revoke_all_user_tokens(user_id, conn)
 
-        # Anonymize AIModelRun references — audit trail preserved,
-        # personal link severed (PRD §10.5)
+        # Anonymize AI audit trail — preserve the record, sever the link
         await conn.execute(
             """
             UPDATE linguamentor.ai_model_runs

@@ -86,6 +86,22 @@ config.set_main_option("sqlalchemy.url", settings.database_url.replace(
 # Migration runners
 # ---------------------------------------------------------------------------
 
+def include_object(object, name, type_, reflected, compare_to):
+    """
+    Prevents Alembic from touching tables that exist in the DB but
+    have no SQLAlchemy model — specifically the Phase 0 calibration
+    and WER tables which are owned by raw SQL scripts, not by ORM models.
+
+    Without this, autogenerate sees those tables as 'not in models'
+    and generates DROP TABLE statements for them. That would wipe
+    all calibration data.
+    """
+    if type_ == "table" and reflected and compare_to is None:
+        # Table exists in DB but not in our models — leave it alone
+        return False
+    return True
+
+
 def do_run_migrations(connection: Connection) -> None:
     """
     The synchronous core that Alembic's context.run_migrations() needs.
@@ -99,15 +115,11 @@ def do_run_migrations(connection: Connection) -> None:
         connection=connection,
         target_metadata=target_metadata,
         include_schemas=True,
-        # Tell Alembic which schemas to watch — prevents it from
-        # touching PostgreSQL system schemas or any future schemas
-        # we don't own
+        include_object=include_object,    # ← ignores unmodelled tables
         include_name=lambda name, type_, parent_names: (
             name in ("linguamentor", None) if type_ == "schema"
             else True
         ),
-        # Render server defaults in generated migrations so
-        # autogenerate detects server_default changes too
         render_as_batch=False,
         compare_server_default=True,
     )

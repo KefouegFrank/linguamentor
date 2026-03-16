@@ -38,6 +38,25 @@ class User(Base):
     subscription_tier = Column(String(20), nullable=False, server_default="free")
     voice_recording_consent = Column(Boolean, nullable=False, server_default="false")
     retraining_opt_out = Column(Boolean, nullable=False, server_default="false")
+    
+    # Email verification — wired to SendGrid when email service is added.
+    # Default FALSE so all existing and new users start unverified.
+    email_verified = Column(Boolean, nullable=False, server_default="false")
+
+    # Account lockout — brute force protection on login (PRD §37).
+    # failed_login_attempts increments on each wrong password.
+    # locked_until is set when attempts reach the threshold (5).
+    # Both reset to zero on successful login.
+    failed_login_attempts = Column(Integer, nullable=False, server_default="0")
+    locked_until = Column(DateTime(timezone=True))
+
+    # MFA — required for admin accounts (PRD §14.2, §37).
+    # mfa_totp_secret stores the base32 TOTP seed (encrypted at rest in prod).
+    # mfa_enabled starts FALSE — admin enables it in their settings.
+    # When TRUE and role=admin, login returns 202 and requires TOTP verification.
+    mfa_enabled = Column(Boolean, nullable=False, server_default="false")
+    mfa_totp_secret = Column(String(64))    # base32-encoded TOTP seed
+    
     deleted_at = Column(DateTime(timezone=True))
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
