@@ -18,11 +18,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import get_settings
 from app.dependencies import set_postgres_pool, set_redis_client
 from app.exceptions import register_exception_handlers
+from app.middleware import CorrelationIdMiddleware
 
-from app.routers import health
-from app.routers import wer_validation
-from app.routers import calibration
+from app.routers import health, calibration, wer_validation
+from app.auth.router import router as auth_router, user_router
+from app.auth.security import init_jwt_keys
 
+
+# Suppress noisy HTTP client debug logs — we don't need to see every
+# request the AI provider SDKs make internally
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("groq").setLevel(logging.WARNING)
@@ -56,6 +60,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # --- Startup ---
     # Import here to avoid circular imports at module load time
     from shared.db_utils.connection import create_postgres_pool, create_redis_client
+    
+    # Load JWT keys once at startup — cached in security.py module level.
+    # Fails loud if keys are missing — better than a cryptic error on
+    # the first auth request under production load.
+    init_jwt_keys()
+    logger.info("JWT RS256 keys loaded")
 
     # Create the connection pool once — all requests share it.
     # min_size=2 keeps two connections warm so the first requests
@@ -105,6 +115,9 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
+     # Correlation ID first — wraps everything so all logs have the request ID
+    app.add_middleware(CorrelationIdMiddleware)
+    
     # CORS — allows the Next.js frontend to call this service via the gateway.
     # In production, origins will be locked to the actual domain.
     app.add_middleware(
@@ -120,12 +133,18 @@ def create_app() -> FastAPI:
 
     # Register routers
     # Each router handles a domain — health, evaluation, appeals, etc.
-    # prefix="" means /health and /ready are at the root, not /health/health
+    
+    # Infrastructure endpoints — no auth required
     app.include_router(health.router)
     
+    # Phase 0 calibration and WER endpoints
     app.include_router(calibration.router)
-    
     app.include_router(wer_validation.router)
+    
+    # Phase 1 auth endpoints — register and user_router separately
+    # because they have different prefixes (/api/v1/auth vs /api/v1/user)
+    app.include_router(auth_router)
+    app.include_router(user_router)
 
     return app
 
