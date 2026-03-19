@@ -1,12 +1,3 @@
-"""
-Entry point for the writing service.
-
-The lifespan function handles startup and shutdown — database pools,
-Redis clients, and anything else that needs to be initialised once
-and cleaned up on exit. FastAPI's lifespan context manager replaced
-the old @app.on_event pattern and is the current best practice.
-"""
-
 import logging
 import sys
 from contextlib import asynccontextmanager
@@ -16,25 +7,22 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
-from app.dependencies import set_postgres_pool, set_redis_client
+from app.dependencies import set_postgres_pool, set_redis_client, set_queue_registry
 from app.exceptions import register_exception_handlers
 from app.middleware import CorrelationIdMiddleware
+from app.queue.queues import QueueRegistry
+from app.queue.worker import start_writing_eval_worker
 
 from app.routers import health, calibration, wer_validation
+from app.routers import writing
 from app.auth.router import router as auth_router, user_router
 from app.auth.security import init_jwt_keys
 
-
-# Suppress noisy HTTP client debug logs — we don't need to see every
-# request the AI provider SDKs make internally
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("groq").setLevel(logging.WARNING)
 logging.getLogger("openai").setLevel(logging.WARNING)
 
-
-# Configure before anything else so early startup errors are captured.
-# In production, Loki picks up stdout logs from the container.
 logging.basicConfig(
     level=logging.DEBUG if get_settings().app_debug else logging.INFO,
     format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
@@ -45,81 +33,70 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    """
-    Manages the full lifecycle of the service.
-
-    Everything before `yield` runs at startup.
-    Everything after `yield` runs at shutdown.
-
-    FastAPI guarantees the shutdown block runs even if an exception
-    occurs during the request lifecycle — so connections always close cleanly.
-    """
     settings = get_settings()
     logger.info(f"Starting {settings.service_name} [{settings.app_env}]")
 
-    # --- Startup ---
-    # Import here to avoid circular imports at module load time
-    from shared.db_utils.connection import create_postgres_pool, create_redis_client
-    
-    # Load JWT keys once at startup — cached in security.py module level.
-    # Fails loud if keys are missing — better than a cryptic error on
-    # the first auth request under production load.
+    from shared.db_utils.connection import (
+        create_postgres_pool, create_redis_client,
+        close_postgres_pool, close_redis_client,
+    )
+
     init_jwt_keys()
     logger.info("JWT RS256 keys loaded")
 
-    # Create the connection pool once — all requests share it.
-    # min_size=2 keeps two connections warm so the first requests
-    # don't pay the connection establishment cost.
-    postgres_pool = await create_postgres_pool(min_size=2, max_size=10)
-    redis_client = await create_redis_client()
+    postgres_pool = await create_postgres_pool(min_size=5, max_size=20)
+    redis_client  = await create_redis_client()
 
-    # Register with the dependency layer so routes can access them
+    # Initialise queue registry — shares the existing Redis client
+    queue_registry = QueueRegistry(redis_client)
+    logger.info("BullMQ queue registry initialised")
+
     set_postgres_pool(postgres_pool)
     set_redis_client(redis_client)
+    set_queue_registry(queue_registry)
+
+    # Start the writing evaluation worker
+    # The worker runs in the same process as an asyncio task.
+    # In production this would be a separate Kubernetes worker pod,
+    # but for Phase 1 co-location keeps deployment simple.
+    worker, shutdown_event = await start_writing_eval_worker(
+        redis_client=redis_client,
+        postgres_pool=postgres_pool,
+    )
+    logger.info("Writing evaluation worker started")
 
     logger.info(f"{settings.service_name} startup complete — ready to serve")
 
-    yield  # <-- service is running and handling requests here
+    yield
 
-    # --- Shutdown ---
-    # This block runs when the process receives SIGTERM (normal k8s shutdown)
-    # or when you Ctrl+C in development. Clean shutdown prevents connection
-    # leaks on the database server.
+    # ── Shutdown ──────────────────────────────────────────────────────────────
     logger.info(f"Shutting down {settings.service_name}...")
 
-    from shared.db_utils.connection import close_postgres_pool, close_redis_client
+    # Signal the worker to stop accepting new jobs
+    shutdown_event.set()
+    await worker.close()
+    logger.info("Writing evaluation worker stopped")
+
+    await queue_registry.close()
     await close_postgres_pool(postgres_pool)
     await close_redis_client(redis_client)
 
     logger.info(f"{settings.service_name} shutdown complete")
 
 
-
 def create_app() -> FastAPI:
-    """
-    Factory function that creates and configures the FastAPI app.
-
-    Using a factory function (rather than a module-level app instance)
-    makes the service easier to test — tests can call create_app()
-    to get a fresh instance with test configuration.
-    """
     settings = get_settings()
 
     app = FastAPI(
         title="LinguaMentor Writing Service",
         description="Rubric-aligned essay scoring and CEFR classification",
         version="0.1.0",
-        # Disable docs in production — no need to expose API schema publicly
         docs_url="/docs" if settings.app_debug else None,
         redoc_url="/redoc" if settings.app_debug else None,
         lifespan=lifespan,
     )
 
-     # Correlation ID first — wraps everything so all logs have the request ID
     app.add_middleware(CorrelationIdMiddleware)
-    
-    # CORS — allows the Next.js frontend to call this service via the gateway.
-    # In production, origins will be locked to the actual domain.
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["http://localhost:3001"] if settings.app_debug else [],
@@ -128,26 +105,16 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    # Register centralised exception handlers
     register_exception_handlers(app)
 
-    # Register routers
-    # Each router handles a domain — health, evaluation, appeals, etc.
-    
-    # Infrastructure endpoints — no auth required
     app.include_router(health.router)
-    
-    # Phase 0 calibration and WER endpoints
     app.include_router(calibration.router)
     app.include_router(wer_validation.router)
-    
-    # Phase 1 auth endpoints — register and user_router separately
-    # because they have different prefixes (/api/v1/auth vs /api/v1/user)
     app.include_router(auth_router)
     app.include_router(user_router)
+    app.include_router(writing.router)   # ← new
 
     return app
 
 
-# Create the app instance that uvicorn will serve
 app = create_app()
