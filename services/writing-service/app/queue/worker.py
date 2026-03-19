@@ -10,7 +10,7 @@ import uuid as uuid_module
 from datetime import datetime, timezone
 
 import asyncpg
-from bullmq import Worker, Job, UnrecoverableError
+from bullmq import Worker, Job
 from redis.asyncio import Redis as AsyncRedis
 
 from app.calibration.ai_provider import get_ai_provider
@@ -23,6 +23,18 @@ from app.queue.queues import (
 )
 from app.writing.cefr import band_to_cefr
 from app.writing.skill_vector import update_skill_vector
+
+# Custom unrecoverable error — BullMQ Python does not export UnrecoverableError.
+# Raising this subclass from the processor causes BullMQ to move the job
+# to failed immediately without consuming any remaining retry attempts.
+# This matches the Node.js UnrecoverableError behaviour exactly.
+class UnrecoverableError(Exception):
+    """
+    Raised when a job failure is permanent and must not be retried.
+    Examples: missing session_id in payload, unknown exam_type,
+    AI schema validation failure (bad prompt structure).
+    """
+    pass
 
 logger = logging.getLogger(__name__)
 
