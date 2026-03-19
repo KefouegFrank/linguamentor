@@ -175,6 +175,7 @@ class WritingSession(Base):
     user_id = Column(UUID(as_uuid=True), ForeignKey("linguamentor.users.id", ondelete="RESTRICT"), nullable=False)
     exam_type = Column(String(30), nullable=False)
     task_type = Column(String(30))
+    task_prompt = Column(Text)
     essay_text = Column(Text, nullable=False)
     word_count = Column(Integer)
     status = Column(String(20), nullable=False, server_default="pending")

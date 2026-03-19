@@ -48,17 +48,17 @@ class Settings(BaseSettings):
     # Paths to PEM files — loaded at startup, not stored as raw strings
     # Private key: signs tokens (writing-service signs during auth)
     # Public key: verifies tokens (all services verify)
-    lm_jwt_private_key_path: str = ""
-    lm_jwt_public_key_path: str = ""
-    lm_jwt_access_token_expire_minutes: int = 15    # PRD §37.1 — 15 min access token
-    lm_jwt_refresh_token_expire_days: int = 7       # PRD §37.1 — 7 day refresh token
+    jwt_private_key_path: str = ""
+    jwt_public_key_path: str = ""
+    jwt_access_token_expire_minutes: int = 15    # PRD §37.1 — 15 min access token
+    jwt_refresh_token_expire_days: int = 7       # PRD §37.1 — 7 day refresh token
 
     @property
     def jwt_private_key(self) -> str:
         """Reads the RS256 private key from disk. Cached after first read."""
-        if not self.lm_jwt_private_key_path:
+        if not self.jwt_private_key_path:
             raise ValueError("LM_JWT_PRIVATE_KEY_PATH is not configured")
-        path = Path(self.lm_jwt_private_key_path)
+        path = Path(self.jwt_private_key_path)
         if not path.exists():
             raise ValueError(f"JWT private key not found at: {path.resolve()}")
         return path.read_text()
@@ -66,9 +66,9 @@ class Settings(BaseSettings):
     @property
     def jwt_public_key(self) -> str:
         """Reads the RS256 public key from disk."""
-        if not self.lm_jwt_public_key_path:
+        if not self.jwt_public_key_path:
             raise ValueError("LM_JWT_PUBLIC_KEY_PATH is not configured")
-        path = Path(self.lm_jwt_public_key_path)
+        path = Path(self.jwt_public_key_path)
         if not path.exists():
             raise ValueError(f"JWT public key not found at: {path.resolve()}")
         return path.read_text()
