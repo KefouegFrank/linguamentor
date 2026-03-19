@@ -1,46 +1,39 @@
-# Central queue registry — all BullMQ queue names and default job options.
+# services/writing-service/app/queue/queues.py
 #
-# Architecture decision: the writing-service owns its queues. The gateway
-# forwards requests to this service which then enqueues. This keeps queue
-# logic co-located with the business logic that processes it, and avoids
-# coupling the gateway to our internal job data structures.
+# Central BullMQ queue registry.
 #
-# Queue naming convention: lm:{service}:{purpose}
-# This namespacing prevents key collisions if multiple services share Redis.
+# CRITICAL connection pattern:
+# BullMQ Python has a confirmed bug (issue #3401) where passing a shared
+# redis.asyncio.Redis instance causes job.data to be empty {} and job.name
+# to be None inside the worker processor. The fix confirmed by the community
+# is to pass the Redis URL string directly to each Queue and Worker.
+# BullMQ Python creates its own internal connections from the URL — this is
+# correct behaviour per the official docs pattern.
+# Ref: https://github.com/taskforcesh/bullmq/issues/3401
 
 from bullmq import Queue
-from redis.asyncio import Redis as AsyncRedis
+from app.config import get_settings
 
 # ── Queue name constants ──────────────────────────────────────────────────────
-# Never use raw strings elsewhere — always import from here.
-
-QUEUE_WRITING_EVAL    = "lm:writing:eval"       # essay scoring jobs
-QUEUE_WRITING_EVAL_DLQ = "lm:writing:eval:dlq"  # dead letter — exhausted retries
-QUEUE_APPEAL_EVAL     = "lm:writing:appeal"     # score appeal secondary eval
-QUEUE_SRS_GENERATION  = "lm:srs:generation"     # daily session pre-gen (Phase 2)
-QUEUE_PDF_GENERATION  = "lm:pdf:generation"     # PDF report export (Phase 3)
+QUEUE_WRITING_EVAL     = "lm:writing:eval"
+QUEUE_WRITING_EVAL_DLQ = "lm:writing:eval:dlq"
+QUEUE_APPEAL_EVAL      = "lm:writing:appeal"
+QUEUE_SRS_GENERATION   = "lm:srs:generation"
+QUEUE_PDF_GENERATION   = "lm:pdf:generation"
 
 # ── Default job options ───────────────────────────────────────────────────────
-# Applied to all writing evaluation jobs unless overridden at enqueue time.
-#
-# attempts=3: initial attempt + 2 retries
-# backoff exponential with 2s base: retries at 2s, 4s, 8s
-# This covers transient AI provider rate limits (typically 1-5s backoff needed)
-# removeOnComplete=100: keep last 100 completed jobs for debugging/audit
-# removeOnFail=500: keep last 500 failed jobs — important for support cases
-
 WRITING_EVAL_JOB_OPTIONS = {
     "attempts": 3,
     "backoff": {
         "type": "exponential",
-        "delay": 2000,      # 2s base → retries at 2s, 4s, 8s
+        "delay": 2000,
     },
     "removeOnComplete": {"count": 100},
     "removeOnFail":     {"count": 500},
 }
 
 APPEAL_EVAL_JOB_OPTIONS = {
-    "attempts": 2,          # one retry for appeals — PRD §42 60s SLA
+    "attempts": 2,
     "backoff": {
         "type": "fixed",
         "delay": 3000,
@@ -53,37 +46,36 @@ APPEAL_EVAL_JOB_OPTIONS = {
 class QueueRegistry:
     """
     Holds initialised BullMQ Queue instances.
-    Created once at app startup and injected via FastAPI dependency.
-
-    We pass the existing redis.asyncio.Redis client to each Queue —
-    this reuses the connection pool rather than opening new connections.
-    BullMQ Python 2.5.0+ supports this pattern natively.
+    
+    Each Queue gets the Redis URL string directly — not a shared client.
+    BullMQ Python creates its own connection pool from the URL.
+    This avoids the confirmed shared-connection bug in BullMQ Python ≤2.19.6.
     """
 
-    def __init__(self, redis_client: AsyncRedis) -> None:
-        connection = {"connection": redis_client}
+    def __init__(self) -> None:
+        settings = get_settings()
+        # Use the Redis URL string — BullMQ Python manages its own connections
+        conn = {"connection": settings.redis_url}
 
         self.writing_eval = Queue(
             QUEUE_WRITING_EVAL,
-            connection,
+            conn,
         )
         self.writing_eval_dlq = Queue(
             QUEUE_WRITING_EVAL_DLQ,
-            connection,
+            conn,
         )
         self.appeal_eval = Queue(
             QUEUE_APPEAL_EVAL,
-            connection,
+            conn,
         )
-        # Phase 2/3 queues — registered now so the namespace is reserved
-        # Workers are not started until those phases are built
         self.srs_generation = Queue(
             QUEUE_SRS_GENERATION,
-            connection,
+            conn,
         )
         self.pdf_generation = Queue(
             QUEUE_PDF_GENERATION,
-            connection,
+            conn,
         )
 
     async def close(self) -> None:

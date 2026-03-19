@@ -48,7 +48,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     redis_client  = await create_redis_client()
 
     # Initialise queue registry — shares the existing Redis client
-    queue_registry = QueueRegistry(redis_client)
+    queue_registry = QueueRegistry()
     logger.info("BullMQ queue registry initialised")
 
     set_postgres_pool(postgres_pool)
@@ -59,9 +59,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # The worker runs in the same process as an asyncio task.
     # In production this would be a separate Kubernetes worker pod,
     # but for Phase 1 co-location keeps deployment simple.
+    settings = get_settings()
     worker, shutdown_event = await start_writing_eval_worker(
-        redis_client=redis_client,
-        postgres_pool=postgres_pool,
+    postgres_pool=postgres_pool,
+    redis_url=settings.redis_url,
     )
     logger.info("Writing evaluation worker started")
 
