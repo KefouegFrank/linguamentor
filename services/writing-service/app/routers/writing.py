@@ -148,10 +148,12 @@ async def evaluate_essay(
     min_words     = MIN_WORD_COUNTS.get(data.exam_type, 100)
 
     # ── Validation ─────────────────────────────────────────────────────────
+    # CORRECT — human readable format:
+    exam_display = data.exam_type.replace("_", " ").title()
     if word_count < min_words:
         raise ValidationError(
             f"Essay too short: {word_count} words. "
-            f"{data.exam_type.upper()} requires at least {min_words} words."
+            f"{exam_display} requires at least {min_words} words."
         )
 
     # Free tier monthly limit check

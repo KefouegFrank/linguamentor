@@ -121,7 +121,7 @@ def _set_refresh_cookie(response: Response, token: str) -> None:
     SameSite=Strict: not sent on cross-site requests — CSRF-safe.
     """
     settings = get_settings()
-    max_age = settings.lm_jwt_refresh_token_expire_days * 24 * 60 * 60  # seconds
+    max_age = settings.jwt_refresh_token_expire_days * 24 * 60 * 60  # seconds
 
     response.set_cookie(
         key=_REFRESH_COOKIE,
