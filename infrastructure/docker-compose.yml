@@ -20,6 +20,9 @@ services:
   redis:
     image: redis:7
     container_name: lm_redis
+    # noeviction: BullMQ job keys must never be evicted under memory pressure.
+    # Without this, Redis can silently delete job data causing lost evaluations.
+    command: redis-server --maxmemory-policy noeviction
     ports:
       - "6379:6379"
     volumes:

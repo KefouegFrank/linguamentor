@@ -1,26 +1,6 @@
-# BullMQ worker — consumes writing evaluation jobs.
-#
-# Each job payload contains ONLY the writing_session_id.
-# Essay text is NEVER stored in the queue — only a DB reference.
-# This is a hard security requirement: Redis job data is plaintext.
-#
-# Worker lifecycle:
-#   1. Fetch writing_session from DB by session_id
-#   2. Load active calibration_baseline (Pearson, version, sample_count)
-#   3. Assemble 8-layer prompt
-#   4. Call AIProvider (with fallback)
-#   5. Validate response schema (Pydantic)
-#   6. Determine CEFR level from band score
-#   7. Update writing_session → status=scored
-#   8. Create AIModelRun record (mandatory — PRD §11.5)
-#   9. Update skill_vector (weighted moving average)
-#  10. Create ReadinessSnapshot
-#
-# Error classification:
-#   - Schema validation failure → UnrecoverableError (no retry — bad prompt)
-#   - AI provider error (rate limit, 5xx) → retryable (exponential backoff)
-#   - DB error → retryable
-#   - Essay not found in DB → UnrecoverableError (job is orphaned)
+# Full corrected version — key change is passing Redis URL string
+# to Worker, not the shared redis.asyncio.Redis instance.
+
 
 import asyncio
 import hashlib
@@ -40,31 +20,19 @@ from app.config import get_settings
 from app.queue.queues import (
     QUEUE_WRITING_EVAL,
     QUEUE_WRITING_EVAL_DLQ,
-    WRITING_EVAL_JOB_OPTIONS,
 )
 from app.writing.cefr import band_to_cefr
 from app.writing.skill_vector import update_skill_vector
 
 logger = logging.getLogger(__name__)
 
-# P95 target per PRD §9.1 — 6 seconds for async essay scoring
-# We set 30s worker timeout: 6s AI call + DB reads/writes + buffer
-# If the AI provider is catastrophically slow, we fail gracefully
 WORKER_JOB_TIMEOUT_MS = 30_000
 
 
 async def _load_calibration_baseline(conn: asyncpg.Connection) -> dict:
-    """
-    Loads the active calibration baseline for use in AIModelRun logging.
-    Returns minimal dict — version string + pearson + sample count.
-    Falls back to dev values if no baseline exists (Phase 0 not yet complete).
-    """
     row = await conn.fetchrow(
         """
-        SELECT
-            calibration_version,
-            pearson_overall,
-            essays_count
+        SELECT calibration_version, pearson_overall, essays_count
         FROM linguamentor.calibration_baseline
         ORDER BY approved_at DESC
         LIMIT 1
@@ -72,11 +40,10 @@ async def _load_calibration_baseline(conn: asyncpg.Connection) -> dict:
     )
     if row:
         return {
-            "version":       row["calibration_version"],
-            "pearson":       float(row["pearson_overall"]),
-            "sample_count":  row["essays_count"],
+            "version":      row["calibration_version"],
+            "pearson":      float(row["pearson_overall"]),
+            "sample_count": row["essays_count"],
         }
-    # No baseline yet — Phase 0 not complete
     settings = get_settings()
     return {
         "version":      settings.calibration_version,
@@ -89,7 +56,6 @@ async def _fetch_writing_session(
     conn: asyncpg.Connection,
     session_id: str,
 ) -> dict:
-    """Fetches the writing session and joins learner profile for prompt context."""
     row = await conn.fetchrow(
         """
         SELECT
@@ -97,6 +63,7 @@ async def _fetch_writing_session(
             ws.user_id::text,
             ws.exam_type,
             ws.task_type,
+            ws.task_prompt,
             ws.essay_text,
             ws.word_count,
             ws.status,
@@ -140,13 +107,7 @@ async def _create_ai_model_run(
     output_tokens: int | None,
     response_hash: str,
 ) -> str:
-    """
-    Creates the AIModelRun audit record — mandatory per PRD §11.5.
-    Called AFTER the AI response is validated — never before.
-    Returns the run_id for FK linkage in writing_sessions.
-    """
     run_id = uuid_module.uuid4()
-    settings = get_settings()
 
     await conn.execute(
         """
@@ -170,14 +131,14 @@ async def _create_ai_model_run(
         """,
         run_id,
         _provider_model_name(provider_name),
-        "latest",                           # version string — provider-dependent
-        "writing_score",                    # task_type per PRD §11.5
+        "latest",
+        "writing_score",
         prompt_hash,
         input_tokens,
         output_tokens,
         latency_ms,
         response_hash,
-        uuid_module.UUID(session["user_id"]),   # anonymised ref — no PII
+        uuid_module.UUID(session["user_id"]),
         calibration["version"],
         calibration["sample_count"],
         session.get("default_persona", "companion"),
@@ -188,7 +149,6 @@ async def _create_ai_model_run(
 
 
 def _provider_model_name(provider_class_name: str) -> str:
-    """Maps provider class name to canonical model name for AIModelRun logging."""
     return {
         "OpenAIProvider":    "gpt-4o",
         "AnthropicProvider": "claude-3-5-sonnet-20241022",
@@ -201,12 +161,11 @@ def _provider_model_name(provider_class_name: str) -> str:
 async def _update_writing_session(
     conn: asyncpg.Connection,
     session_id: str,
-    evaluation,       # AIEvaluationResponse
+    evaluation,
     cefr_level: str,
     ai_model_run_id: str,
     calibration: dict,
 ) -> None:
-    """Updates the writing session to scored status with all evaluation results."""
     await conn.execute(
         """
         UPDATE linguamentor.writing_sessions SET
@@ -254,12 +213,6 @@ async def _create_readiness_snapshot(
     session: dict,
     new_overall_score: float,
 ) -> None:
-    """
-    Creates a ReadinessSnapshot after each evaluation.
-    Formula (Phase 1 simplified — full formula in Phase 4):
-      readiness_index = weighted average of skill_vector dimensions
-    Phase 4 will add trend_factor and confidence_interval.
-    """
     sv = {
         "grammar":       float(session.get("grammar", 0) or 0),
         "vocabulary":    float(session.get("vocabulary", 0) or 0),
@@ -268,20 +221,12 @@ async def _create_readiness_snapshot(
         "fluency":       float(session.get("fluency", 0) or 0),
         "comprehension": float(session.get("comprehension", 0) or 0),
     }
-
-    # Simple weighted average for Phase 1
-    # Writing-focused weights — grammar and coherence weighted higher
     weights = {
-        "grammar":       0.25,
-        "vocabulary":    0.20,
-        "coherence":     0.25,
-        "pronunciation": 0.10,
-        "fluency":       0.10,
-        "comprehension": 0.10,
+        "grammar": 0.25, "vocabulary": 0.20, "coherence": 0.25,
+        "pronunciation": 0.10, "fluency": 0.10, "comprehension": 0.10,
     }
     readiness_index = sum(sv[k] * weights[k] for k in sv)
 
-    # Fetch previous snapshot for delta calculation
     prev = await conn.fetchval(
         """
         SELECT readiness_index FROM linguamentor.readiness_snapshots
@@ -293,9 +238,6 @@ async def _create_readiness_snapshot(
     )
     delta = round(readiness_index - float(prev), 4) if prev else None
 
-    # Project band from overall score (0-9 IELTS scale → 0-1 normalised)
-    projected_band = new_overall_score
-
     await conn.execute(
         """
         INSERT INTO linguamentor.readiness_snapshots (
@@ -303,18 +245,13 @@ async def _create_readiness_snapshot(
             readiness_index, projected_band, confidence_interval,
             delta_from_previous, skill_vector_snapshot,
             trigger_event, created_at
-        ) VALUES (
-            $1, $2,
-            $3, $4, $5,
-            $6, $7,
-            $8, NOW()
-        )
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
         """,
         uuid_module.uuid4(),
         uuid_module.UUID(user_id),
         round(readiness_index, 4),
-        projected_band,
-        0.5,        # Phase 1 placeholder — ±0.5 band confidence interval
+        new_overall_score,
+        0.5,
         delta,
         json.dumps(sv),
         "session_complete",
@@ -325,15 +262,11 @@ async def _route_to_dlq(
     session_id: str,
     job_id: str,
     reason: str,
-    redis_client: AsyncRedis,
+    redis_url: str,
 ) -> None:
-    """
-    Routes an exhausted job to the DLQ for manual inspection.
-    Stores minimal metadata — session_id + reason + timestamp.
-    Operations team can inspect and manually retry from here.
-    """
+    """Routes exhausted job to DLQ — uses URL string, not shared client."""
     from bullmq import Queue
-    dlq = Queue(QUEUE_WRITING_EVAL_DLQ, {"connection": redis_client})
+    dlq = Queue(QUEUE_WRITING_EVAL_DLQ, {"connection": redis_url})
     try:
         await dlq.add(
             "failed_eval",
@@ -359,24 +292,20 @@ async def _route_to_dlq(
 
 def _make_processor(
     postgres_pool: asyncpg.Pool,
-    redis_client:  AsyncRedis,
+    redis_url: str,          # ← URL string, not client
 ):
-    """
-    Factory that returns the BullMQ processor function.
-    Uses closure to inject the DB pool and Redis client without globals.
-    """
     async def process(job: Job, job_token: str) -> dict:
+        # With the URL-string connection pattern, job.data is correctly populated
         session_id = job.data.get("session_id")
         if not session_id:
             raise UnrecoverableError("Job payload missing session_id")
 
         logger.info(
-            f"Processing writing eval job | "
-            f"job_id={job.id} session={session_id[:8]}..."
+            f"Processing writing eval | job={job.id} session={session_id[:8]}..."
         )
 
         async with postgres_pool.acquire() as conn:
-            # ── 1. Mark session as processing ─────────────────────────────
+            # Mark as processing — idempotent WHERE clause prevents double-processing
             await conn.execute(
                 """
                 UPDATE linguamentor.writing_sessions
@@ -386,13 +315,9 @@ def _make_processor(
                 uuid_module.UUID(session_id),
             )
 
-            # ── 2. Fetch session + learner context ────────────────────────
-            session = await _fetch_writing_session(conn, session_id)
+            session      = await _fetch_writing_session(conn, session_id)
+            calibration  = await _load_calibration_baseline(conn)
 
-            # ── 3. Load calibration baseline ──────────────────────────────
-            calibration = await _load_calibration_baseline(conn)
-
-            # ── 4. Assemble 8-layer prompt ────────────────────────────────
             try:
                 exam_type = ExamType(session["exam_type"])
             except ValueError:
@@ -400,11 +325,9 @@ def _make_processor(
                     f"Unknown exam type: {session['exam_type']}"
                 )
 
-            # Build a minimal task_prompt if not stored on the session
-            # In Phase 3 (exam simulation), task_prompt is stored separately
-            task_prompt = (
-                f"Write an essay on the {session['exam_type'].upper()} task. "
-                f"(Full prompt stored separately in Phase 3)"
+            # Use stored task_prompt if available, else generate placeholder
+            task_prompt = session.get("task_prompt") or (
+                f"Write a {session['exam_type'].upper()} essay on the given topic."
             )
 
             prompt = build_evaluation_prompt(
@@ -414,19 +337,20 @@ def _make_processor(
                 calibration_mode=False,
             )
 
-            # ── 5. Call AI provider ───────────────────────────────────────
             try:
-                provider      = get_ai_provider()
-                evaluation, prompt_hash, latency_ms = await provider.evaluate_essay(prompt)
+                provider = get_ai_provider()
+                evaluation, prompt_hash, latency_ms = await provider.evaluate_essay(
+                    prompt
+                )
             except ValueError as e:
-                # Schema validation failure — bad prompt, no retry
+                # Schema validation failure — bad prompt structure, no retry
                 raise UnrecoverableError(f"AI response schema invalid: {e}")
             except Exception as e:
-                # Network/rate limit/provider error — retryable
+                # Network/rate limit — retryable with exponential backoff
                 logger.warning(
                     f"AI provider error (attempt {job.attemptsMade + 1}/3): {e}"
                 )
-                # Mark back to pending so retries don't see 'processing'
+                # Reset to pending so retry doesn't see 'processing' status
                 await conn.execute(
                     """
                     UPDATE linguamentor.writing_sessions
@@ -435,20 +359,16 @@ def _make_processor(
                     """,
                     uuid_module.UUID(session_id),
                 )
-                raise  # BullMQ will retry with exponential backoff
+                raise
 
-            # ── 6. Compute response hash for audit trail ──────────────────
             response_str = json.dumps({
                 "scores": evaluation.scores.model_dump(),
                 "feedback": evaluation.overall_feedback,
             }, sort_keys=True)
             response_hash = hashlib.sha256(response_str.encode()).hexdigest()
 
-            # ── 7. Determine CEFR level ───────────────────────────────────
-            cefr_level = band_to_cefr(float(evaluation.scores.score_overall))
-
-            # ── 8. Create AIModelRun record (mandatory — PRD §11.5) ───────
-            provider_name = provider.__class__.__name__
+            cefr_level      = band_to_cefr(float(evaluation.scores.score_overall))
+            provider_name   = provider.__class__.__name__
             ai_model_run_id = await _create_ai_model_run(
                 conn=conn,
                 session=session,
@@ -456,12 +376,11 @@ def _make_processor(
                 latency_ms=latency_ms,
                 calibration=calibration,
                 provider_name=provider_name,
-                input_tokens=None,      # populated when provider exposes token counts
+                input_tokens=None,
                 output_tokens=None,
                 response_hash=response_hash,
             )
 
-            # ── 9. Update writing session → scored ────────────────────────
             await _update_writing_session(
                 conn=conn,
                 session_id=session_id,
@@ -471,7 +390,6 @@ def _make_processor(
                 calibration=calibration,
             )
 
-            # ── 10. Update skill vector (weighted moving average) ─────────
             await update_skill_vector(
                 conn=conn,
                 user_id=session["user_id"],
@@ -479,7 +397,6 @@ def _make_processor(
                 exam_type=exam_type,
             )
 
-            # ── 11. Create ReadinessSnapshot ──────────────────────────────
             await _create_readiness_snapshot(
                 conn=conn,
                 user_id=session["user_id"],
@@ -495,43 +412,36 @@ def _make_processor(
         )
 
         return {
-            "session_id": session_id,
+            "session_id":    session_id,
             "score_overall": evaluation.scores.score_overall,
-            "cefr_level": cefr_level,
+            "cefr_level":    cefr_level,
         }
 
     return process
 
 
 async def start_writing_eval_worker(
-    redis_client: AsyncRedis,
     postgres_pool: asyncpg.Pool,
+    redis_url: str,           # ← URL string passed in from lifespan
 ) -> tuple[Worker, asyncio.Event]:
     """
-    Starts the writing evaluation BullMQ worker.
-    Returns (worker, shutdown_event) — caller sets shutdown_event to stop.
-
-    Concurrency=3: process 3 essays simultaneously.
-    With max_size=20 DB connections and P95 6s AI latency,
-    3 concurrent workers is conservative but safe for Phase 1.
-    Scale to 10+ in production with dedicated worker pods.
+    Starts the BullMQ writing evaluation worker.
+    
+    Passes Redis URL string directly — avoids shared-connection bug #3401.
+    Worker creates its own internal connections from the URL as designed.
     """
-    settings = get_settings()
     shutdown_event = asyncio.Event()
-
-    processor = _make_processor(postgres_pool, redis_client)
+    processor      = _make_processor(postgres_pool, redis_url)
 
     worker = Worker(
         QUEUE_WRITING_EVAL,
         processor,
         {
-            "connection":  redis_client,
-            "concurrency": 3,
+            "connection":   redis_url,    # ← URL string, not shared client
+            "concurrency":  3,
             "lockDuration": WORKER_JOB_TIMEOUT_MS,
         },
     )
-
-    # ── Worker event handlers ─────────────────────────────────────────────────
 
     def on_completed(job: Job, result: dict) -> None:
         logger.info(
@@ -541,31 +451,27 @@ async def start_writing_eval_worker(
 
     def on_failed(job: Job | None, err: Exception) -> None:
         if job is None:
-            logger.error(f"[worker] job failed with no job reference: {err}")
+            logger.error(f"[worker] job failed with no reference: {err}")
             return
 
-        session_id = job.data.get("session_id", "unknown")
+        session_id    = job.data.get("session_id", "unknown") if job.data else "unknown"
         attempts_made = getattr(job, "attemptsMade", 0)
-        max_attempts = 3
 
         logger.error(
             f"[worker] failed | job={job.id} | "
-            f"session={session_id[:8]}... | "
-            f"attempt={attempts_made}/{max_attempts} | "
-            f"error={err}"
+            f"session={session_id[:8] if len(session_id) > 8 else session_id}... | "
+            f"attempt={attempts_made}/3 | error={err}"
         )
 
-        # Route to DLQ when all retries exhausted
-        if attempts_made >= max_attempts:
+        if attempts_made >= 3:
             asyncio.create_task(
                 _route_to_dlq(
                     session_id=session_id,
                     job_id=str(job.id),
                     reason=str(err),
-                    redis_client=redis_client,
+                    redis_url=redis_url,
                 )
             )
-            # Mark the session as failed in DB for client polling
             asyncio.create_task(
                 _mark_session_failed(
                     postgres_pool=postgres_pool,
@@ -575,11 +481,10 @@ async def start_writing_eval_worker(
             )
 
     worker.on("completed", on_completed)
-    worker.on("failed", on_failed)
+    worker.on("failed",    on_failed)
 
     logger.info(
-        f"Writing eval worker started | "
-        f"queue={QUEUE_WRITING_EVAL} | concurrency=3"
+        f"Writing eval worker started | queue={QUEUE_WRITING_EVAL} | concurrency=3"
     )
 
     return worker, shutdown_event
@@ -590,7 +495,6 @@ async def _mark_session_failed(
     session_id: str,
     reason: str,
 ) -> None:
-    """Marks a writing session as failed after all retries exhausted."""
     try:
         async with postgres_pool.acquire() as conn:
             await conn.execute(
