@@ -6,37 +6,6 @@ LinguaMentor is not a vocabulary app. It teaches, evaluates, adapts, and
 predicts exam readiness — autonomously, at scale, aligned to the rubrics
 of IELTS, TOEFL, and DELF examinations.
 
----
-
-## What's in this repo
-
-This is a monorepo. Everything lives here — frontend, API gateway, and all
-AI microservices. One repo, multiple independently deployable services.
-```
-apps/
-  web/                    → Next.js 14 frontend (PWA)
-
-services/
-  api-gateway/            → Node.js + Fastify (traffic, auth, rate limiting)
-  writing-service/        → Python FastAPI (essay scoring, CEFR classification)
-  voice-service/          → Python FastAPI (ASR, LLM, TTS pipeline)
-  adaptive-engine/        → Python FastAPI (skill vector, SRS scheduling)
-  readiness-engine/       → Python FastAPI (band projection, confidence intervals)
-  srs-scheduler/          → Python FastAPI (spaced repetition pre-generation)
-  calibration-monitor/    → Python FastAPI (Pearson correlation drift alerts)
-  ai-orchestrator/        → Python FastAPI (prompt assembly, model routing)
-
-shared/
-  db_utils/               → PostgreSQL and Redis connection utilities
-                            imported by all Python services via PYTHONPATH
-
-infrastructure/
-  docker-compose.yml      → Local dev: PostgreSQL 16 + Redis 7
-
-docs/
-  adr/                    → Architecture Decision Records
-  prd/                    → Product Requirements Document
-```
 
 ---
 
