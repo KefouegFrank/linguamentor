@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
-from typing import Dict, Any, AsyncGenerator
+from typing import Dict, Any, AsyncGenerator, Type
+from pydantic import BaseModel
 
 class BaseAIProvider(ABC):
     """
@@ -28,4 +29,18 @@ class BaseAIProvider(ABC):
         max_tokens: int
     ) -> AsyncGenerator[str, None]:
         """Provides raw token streaming pipelines for real-time interfaces."""
+        pass
+
+    @abstractmethod
+    async def generate_structured(
+        self, 
+        prompt_layers: list, 
+        response_model: Type[BaseModel],
+        model_tier: str, 
+        temperature: float
+    ) -> Any:
+        """
+        Enforces native LLM structured parsing.
+        Returns an instantiated instance of the provided response_model.
+        """
         pass
