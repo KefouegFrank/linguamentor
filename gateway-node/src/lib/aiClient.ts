@@ -2,15 +2,17 @@
  * Internal AI Service Communication Client
  * Handles point-to-point HTTP requests to the isolated Python AI Monolith.
  */
+
+import { Prisma } from '@prisma/client';
+
 export const aiClient = {
-  async request(endpoint: string, method: 'GET' | 'POST', queryParams?: Record<string, string>) {
+  async request<T = Prisma.InputJsonValue>(
+    endpoint: string,
+    method: 'GET' | 'POST',
+    body?: Record<string, unknown>
+  ): Promise<T> {
     const aiServiceUrl = process.env.AI_SERVICE_URL || 'http://127.0.0.1:8000';
-    
-    // Construct target URL safely along with query string mapping
     const url = new URL(`${aiServiceUrl}${endpoint}`);
-    if (queryParams) {
-      Object.entries(queryParams).forEach(([key, val]) => url.searchParams.append(key, val));
-    }
 
     // Enforce an explicit 10-second timeout circuit breaker
     const controller = new AbortController();
@@ -23,15 +25,19 @@ export const aiClient = {
         headers: {
           'Content-Type': 'application/json',
         },
+        body: method === 'POST' && body ? JSON.stringify(body) : undefined,
       });
 
       clearTimeout(id);
 
       if (!response.ok) {
-        throw new Error(`AI Monolith responded with status code: ${response.status}`);
+        const errorBody = await response.text();
+        console.error(`[AI Monolith 422 Debug] Detailed Response Layer:`, errorBody);
+
+        throw new Error(`AI Monolith responded with status code: ${response.status} | | Details: ${errorBody}`);
       }
 
-      return await response.json();
+      return (await response.json()) as T;
     } catch (error: any) {
       clearTimeout(id);
       throw new Error(`Failed to bridge connection to internal AI Service: ${error.message}`);
