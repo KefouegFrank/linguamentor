@@ -32,3 +32,10 @@ class DiagnosticTemplate(BaseModel):
     grammar_test: GrammarItem
     vocabulary_test: VocabularyItem
     writing_test: WritingPromptItem
+
+class InferenceRequest(BaseModel):
+    """
+    Contract for AI inference requests to strictly enforce JSON body parsing.
+    """
+    prompt: str = Field(..., description="The generative prompt instructions.")
+    tier: str = Field("mid-tier", description="The requested AI processing tier.")

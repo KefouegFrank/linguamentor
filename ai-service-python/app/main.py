@@ -8,7 +8,7 @@ load_dotenv(dotenv_path="../../.env")
 
 from app.config import settings
 from app.orchestrator.openai_provider import OpenAIProvider
-from app.orchestrator.schemas import DiagnosticTemplate
+from app.orchestrator.schemas import DiagnosticTemplate, InferenceRequest
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
@@ -39,12 +39,12 @@ async def health_check():
     }
 
 @app.post("/api/v1/orchestrator/test-inference")
-async def test_inference(prompt: str, tier: str = "mid-tier", provider: OpenAIProvider = Depends(get_ai_provider)):
+async def test_inference(request: InferenceRequest, provider: OpenAIProvider = Depends(get_ai_provider)):
     """Internal orchestration verification endpoint."""
 
     # 1. Detect if we need to run structured placement assessment templates
-    if "adaptive baseline diagnostic evaluation" in prompt.lower():
-        target_lang = "ENGLISH" if "ENGLISH" in prompt else "FRENCH"
+    if "adaptive baseline diagnostic evaluation" in request.prompt.lower():
+        target_lang = "ENGLISH" if "ENGLISH" in request.prompt else "FRENCH"
         
         # Handle Local Dev Bypasses if API Key is not set up yet
         if settings.OPENAI_API_KEY == "mock-key-for-dev":
@@ -73,7 +73,7 @@ async def test_inference(prompt: str, tier: str = "mid-tier", provider: OpenAIPr
         # Real Live Structured Generation Call
         try:
             structured_data = await provider.generate_structured(
-                prompt_layers=[prompt],
+                prompt_layers=[request.prompt],
                 response_model=DiagnosticTemplate,
                 model_tier="mid-tier",
                 temperature=0.5
@@ -84,9 +84,9 @@ async def test_inference(prompt: str, tier: str = "mid-tier", provider: OpenAIPr
 
     # Standard fallback path for un-targeted prompts
     if settings.OPENAI_API_KEY == "mock-key-for-dev":
-        return {"text": f"[MOCK RUN] Processed: {prompt}", "metadata": {"model_name": "mock-engine", "latency_ms": 1}}
+        return {"text": f"[MOCK RUN] Processed: {request.prompt}", "metadata": {"model_name": "mock-engine", "latency_ms": 1}}
         
-    return await provider.generate_text(prompt_layers=[prompt], model_tier=tier, temperature=0.3, max_tokens=100)
+    return await provider.generate_text(prompt_layers=[request.prompt], model_tier=request.tier, temperature=0.3, max_tokens=100)
 
 if __name__ == "__main__":
     import uvicorn
