@@ -1,6 +1,7 @@
 import time
-from typing import Dict, Any, AsyncGenerator
+from typing import Dict, Any, AsyncGenerator, Type
 from openai import AsyncOpenAI
+from pydantic import BaseModel
 from app.orchestrator.base_provider import BaseAIProvider
 from app.config import settings
 
@@ -11,7 +12,6 @@ class OpenAIProvider(BaseAIProvider):
 
     def _map_model(self, model_tier: str) -> str:
         """
-        Implements Section 19.3 Cost Controls.
         Maps logical complexity tiers directly to explicit OpenAI models.
         """
         if model_tier == "high-tier":
@@ -75,3 +75,35 @@ class OpenAIProvider(BaseAIProvider):
         async for chunk in stream:
             if chunk.choices and chunk.choices[0].delta.content:
                 yield chunk.choices[0].delta.content
+
+    
+    async def generate_structured(
+        self, 
+        prompt_layers: list, 
+        response_model: Type[BaseModel],
+        model_tier: str, 
+        temperature: float
+    ) -> BaseModel:
+        """
+        Leverages OpenAI Beta Parsing SDK to inject JSON schemas natively 
+        into the V8 inference sequence.
+        """
+        model = self._map_model(model_tier)
+        messages = [
+            {
+                "role": "system", 
+                "content": "You are an expert CEFR language assessment generator. You must return perfectly formatted testing assets."
+            },
+            {"role": "user", "content": "\n".join(prompt_layers)}
+        ]
+
+        # Use beta client parse method to guarantee structure matching
+        completion = await self.client.beta.chat.completions.parse(
+            model=model,
+            messages=messages,
+            response_format=response_model,
+            temperature=temperature
+        )
+        
+        # Returns the cleanly inflated Pydantic model instance directly
+        return completion.choices[0].message.parsed
