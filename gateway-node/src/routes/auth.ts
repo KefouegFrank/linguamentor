@@ -1,6 +1,7 @@
 import { FastifyInstance, FastifyPluginOptions } from "fastify";
 import bcrypt from "bcrypt";
 import { prisma } from "../lib/prisma";
+import { requireAuth } from "../hooks/autgGuard";
 
 interface RegisterBody {
   email: string;
@@ -148,5 +149,20 @@ export const authRoutes = async (
         });
       }
     },
+  );
+  /**
+   * GET /api/v1/auth/me
+   * Protected Identity Verification Route.
+   * Utilizes preHandler lifecycle array syntax to attach our authentication middleware.
+   */
+  fastify.get(
+    '/me',
+    { preHandler: [requireAuth] },
+    async (request, reply) => {
+      return {
+        authenticated: true,
+        user: request.user
+      };
+    }
   );
 };
