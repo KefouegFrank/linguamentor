@@ -5,6 +5,7 @@ import Fastify, { FastifyInstance } from 'fastify';
 import fastifyJwt from '@fastify/jwt';
 import { prisma } from './lib/prisma';
 import { authRoutes } from './routes/auth';
+import { diagnosticRoutes } from './routes/diagnostic';
 
 const fastify = Fastify({ logger: true });
 
@@ -34,8 +35,8 @@ const apiV1Routes = async (server: FastifyInstance) => {
     }
   });
 
-  //Mount Authentication Domain Routes under /api/v1/auth
   server.register(authRoutes, { prefix: "/auth" });
+  server.register(diagnosticRoutes, { prefix: '/diagnostic' });
 };
 
 // Register API v1 Routes under the explicit legal namespace
