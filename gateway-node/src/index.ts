@@ -4,7 +4,7 @@ dotenv.config({ path: "../.env" });
 import Fastify, { FastifyInstance } from "fastify";
 import { prisma } from "./lib/prisma";
 
-
+import { authRoutes } from "./routes/auth";
 
 const fastify = Fastify({ logger: true });
 
@@ -19,23 +19,18 @@ const apiV1Routes = async (server: FastifyInstance) => {
     // Simple verification check reading the database state
     try {
       await prisma.$queryRaw`SELECT 1`;
-      return {
-        version: "v1.0.0",
-        channel: "stable",
-        database: "CONNECTED",
-      };
+      return { version: "v1.0.0", channel: "stable", database: "CONNECTED" };
     } catch (error) {
       server.log.error(
         "Database connection failed during status check:",
         error,
       );
-      return {
-        version: "v1.0.0",
-        channel: "stable",
-        database: "DISCONNECTED",
-      };
+      return { version: "v1.0.0", channel: "stable", database: "DISCONNECTED" };
     }
   });
+
+  //Mount Authentication Domain Routes under /api/v1/auth
+  server.register(authRoutes, { prefix: "/auth" });
 };
 
 // Register API v1 Routes under the explicit legal namespace
