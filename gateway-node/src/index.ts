@@ -1,12 +1,17 @@
-import * as dotenv from "dotenv";
-dotenv.config({ path: "../.env" });
+import * as dotenv from 'dotenv';
+dotenv.config({ path: '../.env' });
 
-import Fastify, { FastifyInstance } from "fastify";
-import { prisma } from "./lib/prisma";
-
-import { authRoutes } from "./routes/auth";
+import Fastify, { FastifyInstance } from 'fastify';
+import fastifyJwt from '@fastify/jwt';
+import { prisma } from './lib/prisma';
+import { authRoutes } from './routes/auth';
 
 const fastify = Fastify({ logger: true });
+
+// register cryptograhic JWT serivce engine
+fastify.register(fastifyJwt, {
+  secret: process.env.JWT_SECRET || 'your_jwt_secret_here'
+});
 
 // Core Server Health Check
 fastify.get("/health", async () => {
@@ -45,6 +50,7 @@ const start = async () => {
     const port = Number(process.env.GATEWAY_PORT) || 3000;
     await fastify.listen({ port, host: "0.0.0.0" });
   } catch (err) {
+    // console.error("RAW ERROR:", err);
     fastify.log.error("Fatal initialization error:", err);
     await prisma.$disconnect();
     process.exit(1);
