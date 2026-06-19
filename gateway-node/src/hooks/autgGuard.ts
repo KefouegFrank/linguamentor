@@ -14,7 +14,7 @@ export const requireAuth = async (request: FastifyRequest, reply: FastifyReply) 
     // Halt lifecycle execution immediately if token fails verification
     return reply.status(401).send({
       error: 'Unauthorized',
-      message: 'Access denied. A valid authentication token must be provided.',
+      message: 'Access denied. Invalid token.',
     });
   }
 };
