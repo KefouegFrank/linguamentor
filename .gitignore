@@ -69,6 +69,8 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
+doc.md
+new.md
 
 # TypeScript compiled output
 *.js.map

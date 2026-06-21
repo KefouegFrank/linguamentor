@@ -22,7 +22,7 @@ this threshold, a structured tuning protocol is required to:
 
 **Step 1 — Run analysis before touching any code**
 ```bash
-curl -s http://localhost:8001/calibration/runs/{run_id}/analysis
+curl -s http://localhost:8000/calibration/runs/{run_id}/analysis
 ```
 
 Read the `primary_issue` and `recommended_action` fields. Do not
