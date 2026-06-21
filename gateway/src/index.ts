@@ -21,7 +21,7 @@ import * as dotenv from 'dotenv'
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
-dotenv.config({ path: resolve(__dirname, '../../..', '.env') })
+dotenv.config({ path: resolve(__dirname, '../..', '.env') })
 
 const config = {
   port:             parseInt(process.env.LM_APP_PORT ?? '3000', 10),
@@ -30,11 +30,10 @@ const config = {
   redisUrl:         process.env.LM_REDIS_URL           ?? 'redis://localhost:6379',
   frontendUrl:      process.env.LM_FRONTEND_URL        ?? 'http://localhost:3001',
 
+  // Solo-dev topology: one Python ai-service handles all AI engines.
+  // All proxy routes below point here.
   services: {
-    writing:   process.env.LM_WRITING_SERVICE_URL   ?? 'http://localhost:8001',
-    voice:     process.env.LM_VOICE_SERVICE_URL     ?? 'http://localhost:8002',
-    adaptive:  process.env.LM_ADAPTIVE_ENGINE_URL   ?? 'http://localhost:8003',
-    readiness: process.env.LM_READINESS_ENGINE_URL  ?? 'http://localhost:8004',
+    aiService: process.env.LM_AI_SERVICE_URL ?? 'http://localhost:8000',
   },
 
   rateLimits: {
@@ -327,12 +326,11 @@ async function buildApp(): Promise<FastifyInstance> {
   })
 
   // ---------------------------------------------------------------------------
-  // Public auth routes
-  // No injection filter here — passwords/tokens are not AI inputs
+  // Public auth routes — no injection filter (passwords are not AI inputs)
   // ---------------------------------------------------------------------------
   await app.register(async (instance) => {
     await instance.register(httpProxy, {
-      upstream:      config.services.writing,
+      upstream:      config.services.aiService,
       prefix:        '/api/v1/auth',
       rewritePrefix: '/api/v1/auth',
       replyOptions: {
@@ -351,7 +349,7 @@ async function buildApp(): Promise<FastifyInstance> {
 
     // User session management — no AI inputs, no injection filter needed
     await instance.register(httpProxy, {
-      upstream:      config.services.writing,
+      upstream:      config.services.aiService,
       prefix:        '/api/v1/user',
       rewritePrefix: '/api/v1/user',
       replyOptions: {
@@ -363,10 +361,10 @@ async function buildApp(): Promise<FastifyInstance> {
 
     // Writing evaluation — AI-bound, injection filter applied via preValidation
     await instance.register(httpProxy, {
-      upstream:        config.services.writing,
+      upstream:        config.services.aiService,
       prefix:          '/api/v1/writing',
       rewritePrefix:   '/api/v1/writing',
-      preValidation:   injectionGuard,   // ← runs before proxy, after JWT
+      preValidation:   injectionGuard,
       replyOptions: {
         rewriteRequestHeaders: (_req, headers) => ({
           ...headers, ...proxyHeaders(_req as FastifyRequest),
@@ -376,7 +374,7 @@ async function buildApp(): Promise<FastifyInstance> {
 
     // Speaking (Phase 2) — AI-bound
     await instance.register(httpProxy, {
-      upstream:        config.services.writing,
+      upstream:        config.services.aiService,
       prefix:          '/api/v1/speaking',
       rewritePrefix:   '/api/v1/speaking',
       preValidation:   injectionGuard,
@@ -389,7 +387,7 @@ async function buildApp(): Promise<FastifyInstance> {
 
     // Exam simulation (Phase 3) — has essay text fields
     await instance.register(httpProxy, {
-      upstream:        config.services.writing,
+      upstream:        config.services.aiService,
       prefix:          '/api/v1/exam',
       rewritePrefix:   '/api/v1/exam',
       preValidation:   injectionGuard,
@@ -400,9 +398,9 @@ async function buildApp(): Promise<FastifyInstance> {
       },
     })
 
-    // Adaptive engine (Phase 2)
+    // Adaptive + Readiness — consolidated to ai-service
     await instance.register(httpProxy, {
-      upstream:      config.services.adaptive,
+      upstream:      config.services.aiService,
       prefix:        '/api/v1/adaptive',
       rewritePrefix: '/api/v1/adaptive',
       replyOptions: {
@@ -412,9 +410,8 @@ async function buildApp(): Promise<FastifyInstance> {
       },
     })
 
-    // Readiness engine (Phase 4)
     await instance.register(httpProxy, {
-      upstream:      config.services.readiness,
+      upstream:      config.services.aiService,
       prefix:        '/api/v1/readiness',
       rewritePrefix: '/api/v1/readiness',
       replyOptions: {
@@ -433,7 +430,7 @@ async function buildApp(): Promise<FastifyInstance> {
     instance.addHook('preHandler', requireRole(['admin']))
 
     await instance.register(httpProxy, {
-      upstream:      config.services.writing,
+      upstream:      config.services.aiService,
       prefix:        '/calibration',
       rewritePrefix: '/calibration',
       replyOptions: {
@@ -444,7 +441,7 @@ async function buildApp(): Promise<FastifyInstance> {
     })
 
     await instance.register(httpProxy, {
-      upstream:      config.services.writing,
+      upstream:      config.services.aiService,
       prefix:        '/wer',
       rewritePrefix: '/wer',
       replyOptions: {
